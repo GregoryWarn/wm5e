@@ -1131,7 +1131,7 @@ class Wm5eWeaponIdsMenu extends HandlebarsApplicationMixin(ApplicationV2) {
 		classes: ['wm5e-weapon-ids-menu'],
 		window: {
 			title: 'WM5E.WeaponIdsMenu.Title',
-			icon: 'fa-solid fa-swords',
+			icon: 'fa-solid fa-khanda',
 			resizable: true,
 		},
 		actions: {
@@ -1238,7 +1238,7 @@ function registerSettings() {
 		name: 'WM5E.WeaponIdsMenu.Name',
 		label: 'WM5E.WeaponIdsMenu.Label',
 		hint: 'WM5E.WeaponIdsMenu.Hint',
-		icon: 'fa-solid fa-swords',
+		icon: 'fa-solid fa-khanda',
 		type: Wm5eWeaponIdsMenu,
 		restricted: true,
 	});
