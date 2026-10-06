@@ -1,3 +1,10 @@
+## 14.605.1
+* Verified compatibility with Foundry v14.368 and D&D5E v6.0.5.
+* Changes in some settings icons.
+* Updated Sap and Vex effect changes to use AC5E's custom change type, and Slow to use Foundry v14's `type: add` schema.
+* Updated Custom Weapon IDs drag-and-drop handling to use the current Foundry TextEditor API.
+* Updated Sap and Slow to expire at the source actor's next turn start, and Vex at their next turn end, using D&D5E's native expiry handling. If the source has no combatant, effects expire at the matching turn event after the creation round; outside combat, advancing world time expires them.
+
 ## 14.603.1
 * Compatibility bump for Foundry v14.367 and D&D5E v6.0.x.
 * Updated chat message, roll, activity, and originating-message handling for D&D5E v6.
