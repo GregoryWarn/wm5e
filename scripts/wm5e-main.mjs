@@ -906,7 +906,7 @@ async function doSap({ message, shiftKey, el, attackResult }) {
 		start,
 		system: {
 			origin: { item: item.uuid },
-			changes: [{ key: 'flags.automated-conditions-5e.attack.disadvantage', mode: 'custom', value: 'once;' }],
+			changes: [{ key: 'flags.automated-conditions-5e.attack.disadvantage', type: 'ac5e', value: 'once;' }],
 		},
 		flags: {
 			wm5e: { source: 'Sap action' },
@@ -936,7 +936,7 @@ async function doSlow({ message, shiftKey, el, attackResult }) {
 		await updateTargetEffect(target, existingEffect, { 'system.origin.item': item.uuid, duration, start });
 		return true;
 	}
-	const changes = [{ key: 'system.attributes.movement.bonus', mode: 'add', value: -2 * gridUnitDistance() }];
+	const changes = [{ key: 'system.attributes.movement.bonus', type: 'add', value: -2 * gridUnitDistance() }];
 	const effectData = {
 		name: effectName('SlowWeaponMastery'),
 		img: 'icons/magic/movement/chevrons-down-yellow.webp',
@@ -1011,7 +1011,7 @@ async function doVex({ message, shiftKey, el, attackResult }) {
 		start,
 		system: {
 			origin: { item: item.uuid },
-			changes: [{ key: 'flags.automated-conditions-5e.grants.attack.advantage', mode: 'custom', value: 'once; effectOriginTokenId === tokenId && hasAttack' }],
+			changes: [{ key: 'flags.automated-conditions-5e.grants.attack.advantage', type: 'ac5e', value: 'once; effectOriginTokenId === tokenId && hasAttack' }],
 		},
 		flags: {
 			wm5e: vexFlags,
