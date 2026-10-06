@@ -886,15 +886,8 @@ async function doSap({ message, shiftKey, el, attackResult }) {
 	if (!context) return false;
 	const { attacker, attackerToken, target, targetToken, activity, item } = context;
 	if (!attackerToken || !targetToken || !activity) return false;
-	const start = {
-		combatant: attackerToken.combatant?.id ?? null,
-		combat: game.combat?.id ?? null,
-		initiative: attackerToken.combatant?.initiative ?? null,
-		round: game.combat?.round ?? null,
-		turn: attackerToken.combatant?.turnNumber ?? null,
-		time: game.time.worldTime,
-	};
-	const duration = { expiry: 'turnStart', value: attackerToken.combatant?.turnNumber > game.combat?.turn ? 0 : 1, units: 'turns' };
+	const start = ActiveEffect.implementation.getEffectStart();
+	const duration = { expiry: 'sourceStart', value: null, units: 'seconds' };
 	const existingEffect = target.appliedEffects.find((ae) => ae.name === effectName('Sap'));
 	if (existingEffect) return updateTargetEffect(target, existingEffect, { 'system.origin.item': item.uuid, duration, start });
 	const effectData = {
@@ -922,15 +915,8 @@ async function doSlow({ message, shiftKey, el, attackResult }) {
 	if (!context) return false;
 	const { attacker, attackerToken, target, targetToken, activity, item } = context;
 	if (!attackerToken || !targetToken || !activity) return false;
-	const start = {
-		combatant: attackerToken.combatant?.id ?? null,
-		combat: game.combat?.id ?? null,
-		initiative: attackerToken.combatant?.initiative ?? null,
-		round: game.combat?.round ?? null,
-		turn: attackerToken.combatant?.turnNumber ?? null,
-		time: game.time.worldTime,
-	};
-	const duration = { expiry: 'turnStart', value: attackerToken.combatant?.turnNumber > game.combat?.turn ? 0 : 1, units: 'turns' };
+	const start = ActiveEffect.implementation.getEffectStart();
+	const duration = { expiry: 'sourceStart', value: null, units: 'seconds' };
 	const existingEffect = target.appliedEffects.find((ae) => ae.name === effectName('SlowWeaponMastery'));
 	if (existingEffect) {
 		await updateTargetEffect(target, existingEffect, { 'system.origin.item': item.uuid, duration, start });
@@ -990,15 +976,8 @@ async function doVex({ message, shiftKey, el, attackResult }) {
 	if (!context) return false;
 	const { attacker, attackerToken, target, targetToken, activity, item } = context;
 	if (!attackerToken || !targetToken || !activity) return false;
-	const start = {
-		combatant: attackerToken.combatant?.id ?? null,
-		combat: game.combat?.id ?? null,
-		initiative: attackerToken.combatant?.initiative ?? null,
-		round: game.combat?.round ?? null,
-		turn: attackerToken.combatant?.turnNumber ?? null,
-		time: game.time.worldTime,
-	};
-	const duration = { expiry: 'turnEnd', value: attackerToken.combatant?.turnNumber > game.combat?.turn ? 0 : 1, units: 'turns' };
+	const start = ActiveEffect.implementation.getEffectStart();
+	const duration = { expiry: 'sourceEnd', value: null, units: 'seconds' };
 	const vexFlags = { source: 'Vex action', attackerUuid: attacker.uuid, attackerTokenUuid: attackerToken.document.uuid, itemUuid: item.uuid };
 	const existingEffect = target.appliedEffects.find((ae) => isMatchingVexEffect(ae, attacker, attackerToken));
 	if (existingEffect) return updateTargetEffect(target, existingEffect, { 'system.origin.item': item.uuid, duration, start, 'flags.wm5e': vexFlags });
