@@ -1210,7 +1210,7 @@ class Wm5eWeaponIdsMenu extends HandlebarsApplicationMixin(ApplicationV2) {
 	static async #onDrop(event) {
 		const app = event.target.closest('.wm5e-weapon-ids-menu');
 		if (!app) return;
-		const data = TextEditor.getDragEventData(event);
+		const data = foundry.applications.ux.TextEditor.implementation.getDragEventData(event);
 		if (!data?.uuid) return;
 		event.preventDefault();
 
