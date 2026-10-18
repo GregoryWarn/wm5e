@@ -78,6 +78,11 @@ Hooks.on('ready', () => {
 	LISTENERS_REGISTERED = true;
 });
 Hooks.on('renderItemSheet5e', (...args) => onRenderItemSheet(...args));
+Hooks.on('dnd5e.renderChatMessage', renderUsedMasteries);
+Hooks.on('updateChatMessage', (message, changes) => {
+	if (!changes.flags?.wm5e?.usedMasteries) return;
+	for (const card of document.querySelectorAll(`[data-message-id="${message.id}"]`)) renderUsedMasteries(message, card);
+});
 Hooks.on('renderSettingsConfig', (_app, html) => {
 	if (!game.user.isGM) return;
 	const input = html.querySelector('multi-select[name="wm5e.autoMasteriesUsers"]');
@@ -189,7 +194,7 @@ async function doMidiAttackRollComplete(args) {
 	const el = findMasteryAnchor(messageEl, mastery);
 	const contextMessage = getMessageWithTarget(attackMessage, targetToken);
 	const used = await WM_ACTIONS[toMasteryLabel(mastery)]?.({ message: contextMessage, shiftKey: false, el, attackResult });
-	if (used) markUsed(el);
+	if (used) await markMasteryUsed(attackMessage, mastery, el);
 }
 
 async function doAutoMasteries() {
@@ -274,7 +279,7 @@ async function doAutoMasteries() {
 			: target.message;
 		const used = await WM_ACTIONS[toMasteryLabel(mastery)]?.({ message: contextMessage, shiftKey: false, el: target.el, attackResult });
 		logRsrMasteryDebug('used', { mastery, used, targetMessage: target.message, el: target.el });
-		if (used) markUsed(target.el);
+		if (used) await markMasteryUsed(target.message, mastery, target.el);
 	}
 	if ((midiActive || rsrActive) && activity?.uuid && (action === 'damage' || shouldTrigger)) {
 		PENDING_AUTO_MASTERY_CONTEXT.delete(activity.uuid);
@@ -467,7 +472,7 @@ async function onActionsClick(event) {
 	event.stopPropagation();
 
 	const used = await wmAction({ message, shiftKey, el });
-	if (used) markUsed(el);
+	if (used) await markMasteryUsed(message, (term ?? tooltip).toLowerCase(), el);
 	return;
 }
 
@@ -1343,6 +1348,21 @@ function getPlayerForActor(actor) {
 
 	// If all else fails, use any active GM.
 	return game.users.activeGM ?? undefined;
+}
+
+async function markMasteryUsed(message, mastery, el) {
+	markUsed(el);
+	if (!message?.isOwner || !mastery || message.getFlag(Constants.MODULE_ID, `usedMasteries.${mastery}`)) return;
+	await message.setFlag(Constants.MODULE_ID, `usedMasteries.${mastery}`, true);
+}
+
+function renderUsedMasteries(message, html) {
+	const cards = [[message, html], ...Array.from(html.querySelectorAll('[data-message-id]'), (card) => [game.messages.get(card.dataset.messageId), card])];
+	for (const [source, card] of cards) {
+		for (const [mastery, used] of Object.entries(source?.flags?.wm5e?.usedMasteries ?? {})) {
+			if (used) markUsed(findMasteryAnchor(card, mastery));
+		}
+	}
 }
 
 function markUsed(el) {
