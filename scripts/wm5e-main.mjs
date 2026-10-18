@@ -67,6 +67,10 @@ function npcMasteries() {
 Hooks.on('ready', () => {
 	WM_REFERENCES = CONFIG.DND5E.weaponMasteries;
 	applyCustomWeaponIds();
+	if (game.user === game.users.activeGM && !game.settings.storage.get('world').getSetting(`${Constants.MODULE_ID}.autoMasteriesUsers`)) {
+		const users = game.users.filter((user) => isAutoMasteriesEnabled(user.id)).map((user) => user.id);
+		game.settings.set(Constants.MODULE_ID, 'autoMasteriesUsers', users);
+	}
 	if (LISTENERS_REGISTERED) return;
 	document.addEventListener('click', onActionsClick, { capture: true });
 	document.addEventListener('auxclick', onActionsClick, { capture: true });
@@ -74,6 +78,25 @@ Hooks.on('ready', () => {
 	LISTENERS_REGISTERED = true;
 });
 Hooks.on('renderItemSheet5e', (...args) => onRenderItemSheet(...args));
+Hooks.on('renderSettingsConfig', (_app, html) => {
+	if (!game.user.isGM) return;
+	const input = html.querySelector('multi-select[name="wm5e.autoMasteriesUsers"]');
+	const label = input?.closest('.form-group')?.querySelector('label');
+	if (!label || label.querySelector('.wm5e-select-all')) return;
+	const button = document.createElement('button');
+	button.type = 'button';
+	button.className = 'wm5e-select-all';
+	button.textContent = i18n('AutoMasteries.SelectAll');
+	button.title = i18n('AutoMasteries.SelectAll');
+	button.setAttribute('aria-label', button.title);
+	button.addEventListener('click', (event) => {
+		event.preventDefault();
+		event.stopPropagation();
+		input.value = game.users.map((user) => user.id);
+		input.dispatchEvent(new Event('change', { bubbles: true }));
+	});
+	label.append(button);
+});
 Hooks.on('dnd5e.preRollAttack', (...args) => doPreRollAttack(args));
 Hooks.on('dnd5e.preRollDamage', (...args) => doPreRollDamage(args));
 Hooks.on('dnd5e.postRollAttack', (...args) => doAutoMasteries(...args, 'attack'));
@@ -1229,11 +1252,22 @@ function registerSettings() {
 		onChange: () => applyCustomWeaponIds(),
 	});
 
+	game.settings.register(Constants.MODULE_ID, 'autoMasteriesUsers', {
+		name: 'WM5E.AutoMasteries.Name',
+		hint: 'WM5E.AutoMasteries.Hint',
+		scope: 'world',
+		config: true,
+		type: new foundry.data.fields.SetField(new foundry.data.fields.StringField({
+			choices: () => Object.fromEntries(game.users.map((user) => [user.id, user.name])),
+		})),
+	});
+
+	// Retain existing user preferences until the GM configures their replacements.
 	game.settings.register(Constants.MODULE_ID, 'autoMasteries', {
 		name: 'WM5E.AutoMasteries.Name',
 		hint: 'WM5E.AutoMasteries.Hint',
 		scope: 'user',
-		config: true,
+		config: false,
 		type: new foundry.data.fields.BooleanField({ initial: false }),
 	});
 
@@ -1254,8 +1288,13 @@ function registerSettings() {
 	});
 }
 
-function isAutoMasteriesEnabled() {
-	return game.settings.get(Constants.MODULE_ID, 'autoMasteries');
+function isAutoMasteriesEnabled(userId = game.user.id) {
+	const setting = game.settings.storage.get('world').getSetting(`${Constants.MODULE_ID}.autoMasteriesUsers`);
+	if (setting) {
+		const users = game.settings.get(Constants.MODULE_ID, 'autoMasteriesUsers');
+		return users.has(userId);
+	}
+	return game.settings.storage.get('user').getSetting(`${Constants.MODULE_ID}.autoMasteries`, userId)?.value === true;
 }
 
 function isNickReminderEnabled() {

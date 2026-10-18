@@ -94,6 +94,22 @@ a.wm5e-mastery-link[hidden] {
 	white-space: nowrap;
 }
 
+.form-group > label:has(> .wm5e-select-all) {
+	display: flex;
+	align-items: center;
+	gap: 14px;
+	white-space: nowrap;
+}
+
+.wm5e-select-all {
+	display: inline-flex;
+	flex: 0 0 auto;
+	width: auto;
+	min-height: 24px;
+	padding: 0 6px;
+	vertical-align: middle;
+}
+
 .wm5e-weapon-ids-body {
 	display: flex;
 	flex-direction: column;

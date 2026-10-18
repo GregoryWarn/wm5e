@@ -22,8 +22,9 @@
 			"Add": "Add"
 		},
 		"AutoMasteries": {
-			"Name": "Automatically Trigger Masteries",
-			"Hint": "When enabled (each user must enable separately), relevant weapon masteries will be automatically triggered when making attacks with applicable weapons."
+			"Name": "Automatic Masteries",
+			"Hint": "Choose which user clients automatically trigger relevant weapon masteries.",
+			"SelectAll": "Select All"
 		},
 		"NickReminder": {
 			"Name": "Post Nick Reminder",
