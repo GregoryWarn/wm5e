@@ -1,3 +1,9 @@
+## 14.606.1
+* Verified compatibility with Foundry v14.368 and D&D5E v6.0.6.
+* Moved Automatic Masteries toggle to a GM controlled user multiselect, with a button to Select All.
+  * Added a one-time migration preserving existing users’ Automatic Masteries settings, including offline users.
+* Fixed mastery links losing their "(used)" indicator when chat cards refresh. Indicators now persist across clients, reloads, and the new Bugbear's Mechanics 5E combined chat cards.
+
 ## 14.605.1
 * Verified compatibility with Foundry v14.368 and D&D5E v6.0.5.
 * Changes in some settings icons.
