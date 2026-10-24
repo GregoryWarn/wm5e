@@ -841,7 +841,7 @@ async function doGraze({ message, shiftKey, el, attackResult }) {
 	if (!context) return false;
 	const { attacker, attackerToken, targetToken, activity, attackRoll } = context;
 	if (!attackerToken || !targetToken || !activity) return false;
-	const abilityId = activity.ability ?? 'str';
+	const abilityId = attackRoll?.options?.ability ?? message.system?.ability ?? activity.ability ?? 'str';
 	const ability = attacker?.system?.abilities?.[abilityId];
 	if (!ability) return false;
 	const mod = ability.mod;
@@ -850,6 +850,7 @@ async function doGraze({ message, shiftKey, el, attackResult }) {
 		return false;
 	}
 	const damageType = getActivityDamageType(activity, attackRoll);
+	const label = CONFIG.DND5E.weaponMasteries.graze.label;
 	const options =
 		damageType ?
 			{
@@ -857,9 +858,10 @@ async function doGraze({ message, shiftKey, el, attackResult }) {
 				appearance: { colorset: damageType },
 			}
 		:	{};
-	await new CONFIG.Dice.DamageRoll(String(mod), attacker.getRollData(), options).toMessage(
-		createMessageConfig({ activity, target: targetToken, flavor: `${activity.item.name} - Graze`, type: 'damage' }),
-	);
+	options.flavor = label;
+	const messageConfig = createMessageConfig({ activity, target: targetToken, flavor: `${activity.item.name} - ${label}`, type: 'damage' });
+	messageConfig.system.activity = { ...messageConfig.system.activity, name: label };
+	await new CONFIG.Dice.DamageRoll(String(mod), attacker.getRollData(), options).toMessage(messageConfig);
 	return true;
 }
 
