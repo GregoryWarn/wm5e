@@ -38,6 +38,14 @@ function effectName(key) {
 Hooks.on('init', () => {
 	registerQueries();
 	registerSettings();
+	CONFIG.Token.movement.actions.wm5ePush = {
+		label: 'DND5E.WEAPON.Mastery.Push',
+		icon: 'fa-solid fa-hand',
+		canSelect: false,
+		measure: false,
+		terrainAction: null,
+		costMultiplier: 0,
+	};
 	npcMasteries();
 });
 
@@ -878,7 +886,7 @@ async function doPush({ message, shiftKey, el, attackResult }) {
 		ui.notifications.warn(i18n('Notifications.PushSizeLimit'));
 		return false;
 	}
-	const { angle } = new foundry.canvas.geometry.Ray(attackerToken, targetToken);
+	const { angle } = new foundry.canvas.geometry.Ray(attackerToken.center, targetToken.center);
 	const direction = Math.normalizeDegrees(Math.toDegrees(angle));
 	const positions = new Map();
 	for (const distance of [1, 2].map((multiplier) => multiplier * (canvas.grid?.distance || 5))) {
@@ -891,10 +899,8 @@ async function doPush({ message, shiftKey, el, attackResult }) {
 	}
 	const pushDistance = await promptPushDistance([...positions.keys()]);
 	if (!pushDistance) return false;
-	const finalPosition = positions.get(pushDistance);
-	let pushed;
-	if (target.isOwner) pushed = await targetToken.document.update(finalPosition);
-	else pushed = await doQueries('push', { tokenUuid: targetToken.document.uuid, updates: finalPosition });
+	const data = { tokenUuid: targetToken.document.uuid, waypoints: positions.get(pushDistance) };
+	const pushed = target.isOwner ? await pushAction(data) : await doQueries('push', data);
 	if (!pushed) return false;
 	return true;
 }
@@ -903,8 +909,12 @@ function getPushPosition(targetToken, direction, maxDistance) {
 	for (const offset of [0, 45, -45]) {
 		const point = canvas.grid.getTranslatedPoint(targetToken, direction + offset, maxDistance);
 		const snapped = targetToken.getSnappedPosition(point);
-		const path = targetToken.findMovementPath([{ x: targetToken.x, y: targetToken.y }, snapped], {});
-		if (path.result.length > 1) return path.result.at(-1);
+		const path = targetToken.findMovementPath([
+			{ x: targetToken.x, y: targetToken.y, action: 'wm5ePush' },
+			{ ...snapped, snapped: true, action: 'wm5ePush' },
+		], { constrainOptions: { ignoreWalls: false, ignoreTokens: false } });
+		const destination = path.result?.at(-1);
+		if (path.result?.length > 1 && destination.x === snapped.x && destination.y === snapped.y) return path.result.slice(1);
 	}
 	return null;
 }
@@ -1062,9 +1072,9 @@ async function updateEffect({ effectUuid, updates } = {}) {
 	return effect?.update(updates);
 }
 
-async function pushAction({ tokenUuid, updates }) {
+async function pushAction({ tokenUuid, waypoints }) {
 	const token = await fromUuid(tokenUuid);
-	return token?.update(updates);
+	return token?.move(waypoints, { showRuler: true, constrainOptions: { ignoreWalls: false, ignoreTokens: false } });
 }
 
 async function rollSavingThrow({ actorUuid, ability, dc, flavor }) {
