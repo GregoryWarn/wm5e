@@ -5,6 +5,7 @@
 	UPDATE_EFFECT: 'wm5e.updateEffectQuery',
 	ROLL_SAVE: 'wm5e.rollSaveQuery',
 	PUSH: 'wm5e.pushToken',
+	MARK_MASTERY_USED: 'wm5e.markMasteryUsed',
 };
 
 const { ApplicationV2, HandlebarsApplicationMixin } = foundry.applications.api;
@@ -1039,6 +1040,8 @@ async function doQueries(type, data) {
 			else return activeGM.query(Constants.ROLL_SAVE, data);
 		} else if (type === 'push') {
 			return activeGM.query(Constants.PUSH, data);
+		} else if (type === 'markMasteryUsed') {
+			return await activeGM.query(Constants.MARK_MASTERY_USED, data);
 		}
 		return true;
 	} catch (err) {
@@ -1074,6 +1077,7 @@ function registerQueries() {
 	CONFIG.queries[Constants.UPDATE_EFFECT] = updateEffect;
 	CONFIG.queries[Constants.ROLL_SAVE] = rollSavingThrow;
 	CONFIG.queries[Constants.PUSH] = pushAction;
+	CONFIG.queries[Constants.MARK_MASTERY_USED] = persistMasteryUsed;
 }
 
 function getTargetDescriptors(tokens) {
@@ -1347,9 +1351,31 @@ function getPlayerForActor(actor) {
 
 async function markMasteryUsed(message, mastery, el) {
 	message = getOriginatingAttackMessage(message?.id) ?? message;
-	markUsed(el);
-	if (!message?.isOwner || !mastery || message.getFlag(Constants.MODULE_ID, `usedMasteries.${mastery}`)) return;
-	await message.setFlag(Constants.MODULE_ID, `usedMasteries.${mastery}`, true);
+	if (!message || !Object.hasOwn(WM_ACTIONS, toMasteryLabel(mastery))) return false;
+	try {
+		const data = { messageId: message.id, mastery };
+		const saved = message.getFlag(Constants.MODULE_ID, `usedMasteries.${mastery}`) ||
+			(message.canUserModify(game.user, 'update') ? await persistMasteryUsed(data) : await doQueries('markMasteryUsed', data));
+		if (saved) {
+			markUsed(el);
+			return true;
+		}
+		console.warn(`${Constants.MODULE_NAME} | Unable to save ${mastery} use on ChatMessage ${message.id}.`);
+	} catch (err) {
+		console.error(`${Constants.MODULE_NAME} | Error saving mastery use:`, err);
+	}
+	return false;
+}
+
+async function persistMasteryUsed({ messageId, mastery } = {}, { user = game.user } = {}) {
+	if (!Object.hasOwn(WM_ACTIONS, toMasteryLabel(mastery))) return false;
+	const message = getOriginatingAttackMessage(messageId) ?? game.messages.get(messageId);
+	if (!message?.canUserModify(game.user, 'update')) return false;
+	const origin = message.getOriginatingMessage?.();
+	const actor = message.getAssociatedActor?.() ?? message.speakerActor;
+	if (!user?.isGM && !message.canUserModify(user, 'update') && !origin?.canUserModify(user, 'update') && !actor?.testUserPermission(user, 'OWNER')) return false;
+	if (!message.getFlag(Constants.MODULE_ID, `usedMasteries.${mastery}`)) await message.setFlag(Constants.MODULE_ID, `usedMasteries.${mastery}`, true);
+	return true;
 }
 
 function renderUsedMasteries(message, html) {
