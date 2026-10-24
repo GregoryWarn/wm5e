@@ -1,3 +1,13 @@
+## 14.606.2
+* Push now uses Foundry's native movement paths, respecting walls and D&D5E movement restrictions without spending movement. Blocked paths are excluded from the distance choices.
+* Automatic masteries no longer depend on visible mastery links or tags, improving compatibility with modules that hide or replace chat card content.
+* Improved attack message resolution with RSReforged using D&D5E's current message data. Manual mastery actions still require RSReforged to restore the system's mastery links; automatic masteries work without them.
+* Mastery usage is saved on the attack message, with used indicators restored on associated chat cards when links render.
+* Added an authorized GM fallback for saving mastery usage when a player cannot update the attack message. Failed saves no longer mark links as used locally.
+* Fixed automatic masteries running before RSReforged creates its batched roll messages, which could resolve an older attack instead.
+* Graze now uses the ability selected for the attack roll and identifies its damage card as Graze.
+* MidiQOL mastery automation now uses its checked hit/miss outcome and preserves the actual attack roll when resolving actions from combined chat cards.
+
 ## 14.606.1
 * Verified compatibility with Foundry v14.368 and D&D5E v6.0.6.
 * Moved Automatic Masteries toggle to a GM controlled user multiselect, with a button to Select All.
