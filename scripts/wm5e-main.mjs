@@ -164,12 +164,13 @@ function doMidiPreDamageRoll(args) {
 	const targetToken = getWorkflowTarget(workflow);
 	if (!activity?.uuid || !(targetToken?.actor instanceof Actor)) return;
 	const mastery = workflow?.attackRoll?.options?.mastery ?? PENDING_AUTO_MASTERY_CONTEXT.get(activity.uuid)?.mastery ?? '';
-	const attackResult = summarizeAttackResult(workflow?.attackRoll);
+	const attackResult = getMidiAttackResult(workflow, targetToken);
 	if (!attackResult) return;
 	const context = {
 		mastery,
 		messageId: workflow?.itemCardId ?? workflow?.defaultItemCardUuid?.split('.').pop() ?? null,
 		attackResult,
+		attackRoll: workflow.attackRoll,
 		targetActorUuid: targetToken.actor.uuid,
 		targetTokenUuid: targetToken.document.uuid,
 		timestamp: Date.now(),
@@ -193,13 +194,14 @@ async function doMidiAttackRollComplete(args) {
 	if (!activity?.uuid || !(targetToken?.actor instanceof Actor)) return;
 	const mastery = workflow?.attackRoll?.options?.mastery ?? '';
 	if (!mastery) return;
-	const attackResult = summarizeAttackResult(workflow.attackRoll);
+	const attackResult = getMidiAttackResult(workflow, targetToken);
 	const attackMessage = workflow.chatCard ?? (workflow.itemCardId ? game.messages.get(workflow.itemCardId) : null) ?? (await findRelevantMessageForActivity(activity));
 	if (mastery === 'nick' && !isNickReminderEnabled()) return;
 	PENDING_AUTO_MASTERY_CONTEXT.set(activity.uuid, {
 		mastery,
 		messageId: attackMessage?.id ?? null,
 		attackResult,
+		attackRoll: workflow.attackRoll,
 		targetActorUuid: targetToken.actor.uuid,
 		targetTokenUuid: targetToken.document.uuid,
 		timestamp: Date.now(),
@@ -212,7 +214,7 @@ async function doMidiAttackRollComplete(args) {
 	};
 	const shouldTrigger = (attackResult.isMiss && mastery === 'graze') || mastery === 'nick' || (attackResult.isHit && ['push', 'sap', 'topple'].includes(mastery));
 	if (!shouldTrigger) return;
-	const contextMessage = getMessageWithTarget(attackMessage, targetToken);
+	const contextMessage = getMessageWithTarget(attackMessage, targetToken, workflow.attackRoll);
 	const used = await WM_ACTIONS[toMasteryLabel(mastery)]?.({ message: contextMessage, shiftKey: false, attackResult });
 	if (used) await markMasteryUsed(attackMessage, mastery);
 }
@@ -256,6 +258,7 @@ async function doAutoMasteries() {
 				mastery: mastery || pendingContext?.mastery || '',
 				messageId: attackMessage?.id ?? pendingContext?.messageId ?? null,
 				attackResult: attackResult ?? pendingContext?.attackResult ?? null,
+				attackRoll: pendingContext?.attackRoll,
 				targetActorUuid: pendingContext?.targetActorUuid ?? null,
 				targetTokenUuid: pendingContext?.targetTokenUuid ?? null,
 				timestamp: Date.now(),
@@ -289,7 +292,7 @@ async function doAutoMasteries() {
 	if (shouldTrigger && attackMessage) {
 		const contextToken = action === 'damage' && midiActive ? getTokenFromUuid(pendingContext?.targetTokenUuid) : null;
 		const contextMessage =
-			contextToken ? getMessageWithTarget(attackMessage, contextToken)
+			contextToken ? getMessageWithTarget(attackMessage, contextToken, pendingContext?.attackRoll)
 			: action === 'damage' && rollMessage?.system?.targets?.length ? rollMessage
 			: attackMessage;
 		const used = await WM_ACTIONS[toMasteryLabel(mastery)]?.({ message: contextMessage, shiftKey: false, attackResult });
@@ -746,17 +749,25 @@ function getWorkflowTarget(workflow) {
 	return null;
 }
 
+function getMidiAttackResult(workflow, targetToken) {
+	const result = summarizeAttackResult(workflow?.attackRoll);
+	if (!result || !workflow.hitDisplayData?.[targetToken?.document?.uuid]) return result;
+	const isHit = workflow.hitTargets.has(targetToken) || workflow.hitTargetsEC.has(targetToken);
+	return { ...result, isSuccess: isHit, isFailure: !isHit, isHit, isMiss: !isHit };
+}
+
 function getTokenFromUuid(uuid) {
 	const documentRef = uuid ? fromUuidSync(uuid) : null;
 	if (documentRef instanceof TokenDocument) return documentRef.object;
 	return null;
 }
 
-function getMessageWithTarget(message, token) {
+function getMessageWithTarget(message, token, attackRoll) {
 	const [descriptor] = getTargetDescriptors([token]);
 	if (!message || !descriptor) return message;
 	const clone = Object.create(message);
 	Object.defineProperty(clone, 'system', { value: foundry.utils.mergeObject(foundry.utils.duplicate(message.system ?? {}), { targets: [descriptor] }, { inplace: false }) });
+	if (attackRoll) Object.defineProperty(clone, 'rolls', { value: [attackRoll] });
 	return clone;
 }
 
