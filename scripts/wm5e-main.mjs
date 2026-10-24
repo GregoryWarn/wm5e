@@ -15,6 +15,7 @@ let LISTENERS_REGISTERED = false;
 const PENDING_AUTO_MASTERY_CONTEXT = new Map();
 const PENDING_AUTO_MASTERY_MAX_AGE_MS = 60000;
 const RSR_MASTERY_LINKS = new Map();
+const RSR_DEFERRED_ROLLS = new WeakSet();
 const REGISTERED_WEAPON_IDS = new Set();
 
 const WM_ACTIONS = {
@@ -119,6 +120,14 @@ Hooks.on('dnd5e.preRollAttack', (...args) => doPreRollAttack(args));
 Hooks.on('dnd5e.preRollDamage', (...args) => doPreRollDamage(args));
 Hooks.on('dnd5e.postRollAttack', (...args) => doAutoMasteries(...args, 'attack'));
 Hooks.on('dnd5e.rollDamage', (...args) => doAutoMasteries(...args, 'damage'));
+Hooks.on('dnd5e.postRollConfiguration', (rolls, _config, _dialog, message) => {
+	if (message.create !== false || message.data?.flags?.rsreforged?.workflowVersion !== 2) return;
+	for (const roll of rolls) RSR_DEFERRED_ROLLS.add(roll);
+});
+Hooks.on('createChatMessage', (message, _options, userId) => {
+	if (userId !== game.user.id || message.flags?.rsreforged?.workflowVersion !== 2 || !['attack', 'damage'].includes(message.type)) return;
+	return doAutoMasteries(message.rolls, { subject: message.getAssociatedActivity?.(), message }, message.type);
+});
 Hooks.on('midi-qol.AttackRollComplete', (...args) => doMidiAttackRollComplete(args));
 Hooks.on('midi-qol.preDamageRoll', (...args) => doMidiPreDamageRoll(args));
 Hooks.on('rsreforged.preRenderChatMessageContent', (...args) => onRsrPreRenderChatMessageContent(...args));
@@ -212,9 +221,10 @@ async function doAutoMasteries() {
 	if (!isAutoMasteriesEnabled()) return;
 	prunePendingAutoMasteryContext();
 	const [rolls, activityContext, action] = arguments;
+	if (!activityContext?.message && rolls?.some((roll) => RSR_DEFERRED_ROLLS.has(roll))) return;
 	if (rolls?.some((roll) => roll.options?.wm5eNoMastery)) return;
 	const activity = getHookSubject(activityContext);
-	const rollMessage = rolls?.[0]?.parent;
+	const rollMessage = activityContext?.message ?? rolls?.[0]?.parent;
 	const originatingMessageId = rollMessage?.getOriginatingMessage?.()?.id;
 	const midiActive = game.modules.get('midi-qol')?.active ?? false;
 	const rsrActive = game.modules.get('rsreforged')?.active ?? false;
