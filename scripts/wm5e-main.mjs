@@ -1374,14 +1374,23 @@ function getMasteryTurn(actor, mastery) {
 }
 
 async function executeMastery({ attackMessage, mastery, rowId, el, ...context }) {
-	if (!attackMessage || !rowId || hasUsedMastery(attackMessage, mastery, rowId)) return false;
+	if (!attackMessage || !rowId) return false;
+	if (hasUsedMastery(attackMessage, mastery, rowId)) {
+		if (el && mastery === 'cleave') ui.notifications.info(i18n('Notifications.CleaveAlreadyUsedAttack'));
+		return false;
+	}
 	const authority = game.users.activeGM ?? (attackMessage.author?.active ? attackMessage.author : null);
 	if (!authority) return false;
 	const request = (data) => authority.id === game.user.id ? claimMastery(data) : authority.query(Constants.CLAIM_MASTERY, data);
 	const data = { messageId: attackMessage.id, mastery, rowId };
 	let token, used = false;
 	try {
-		token = await request(data);
+		const claim = await request(data);
+		if (claim?.reason === 'usedThisTurn') {
+			if (el && mastery === 'cleave') ui.notifications.info(i18n('Notifications.CleaveAlreadyUsedTurn'));
+			return false;
+		}
+		token = claim;
 		if (!token) return false;
 		used = !!(await WM_ACTIONS[toMasteryLabel(mastery)]({ ...context, el }));
 		return used;
@@ -1445,7 +1454,8 @@ async function claimMastery({ messageId, mastery, rowId, token, used } = {}, { u
 	const actor = message.getAssociatedActor?.() ?? message.speakerActor;
 	const turn = getMasteryTurn(actor, mastery);
 	const turnKey = turn ? `${actor.uuid}:${mastery}:${turn}` : null;
-	if (turnKey && (MASTERY_TURN_CLAIMS.has(turnKey) || actor.getFlag(Constants.MODULE_ID, `masteryTurns.${mastery}`)?.includes(turn))) return false;
+	if (turnKey && actor.getFlag(Constants.MODULE_ID, `masteryTurns.${mastery}`)?.includes(turn)) return { reason: 'usedThisTurn' };
+	if (turnKey && MASTERY_TURN_CLAIMS.has(turnKey)) return false;
 	token = foundry.utils.randomID();
 	MASTERY_CLAIMS.set(key, { token, userId: user.id, actor, turn, turnKey });
 	if (turnKey) MASTERY_TURN_CLAIMS.set(turnKey, token);

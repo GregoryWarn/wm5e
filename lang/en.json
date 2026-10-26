@@ -42,6 +42,8 @@
 		"Notifications": {
 			"CleaveRequiresSuccess": "Cleave can only be used on a successful attack roll.",
 			"CleaveNoTargetsInRange": "No valid targets in range for Cleave.",
+			"CleaveAlreadyUsedAttack": "Cleave has already been used for this attack.",
+			"CleaveAlreadyUsedTurn": "Cleave has already been used this turn.",
 			"NoTargets": "No targets selected.",
 			"GrazeRequiresFailure": "Graze can only be used on a failed attack roll.",
 			"GrazeRequiresPositiveModifier": "Graze requires a positive ability modifier to deal damage.",
