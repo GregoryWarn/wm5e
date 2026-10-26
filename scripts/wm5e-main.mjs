@@ -6,6 +6,7 @@
 	ROLL_SAVE: 'wm5e.rollSaveQuery',
 	PUSH: 'wm5e.pushToken',
 	MARK_MASTERY_USED: 'wm5e.markMasteryUsed',
+	CLAIM_MASTERY: 'wm5e.claimMastery',
 };
 
 const { ApplicationV2, HandlebarsApplicationMixin } = foundry.applications.api;
@@ -16,6 +17,10 @@ const PENDING_AUTO_MASTERY_CONTEXT = new Map();
 const PENDING_AUTO_MASTERY_MAX_AGE_MS = 60000;
 const RSR_MASTERY_LINKS = new Map();
 const RSR_DEFERRED_ROLLS = new WeakSet();
+const MASTERY_ROLL_CONTEXT = new WeakMap();
+const MASTERY_CLAIMS = new Map();
+const MASTERY_TURN_CLAIMS = new Map();
+const MASTERY_ACTOR_UPDATES = new Map();
 const REGISTERED_WEAPON_IDS = new Set();
 
 const WM_ACTIONS = {
@@ -67,7 +72,7 @@ Hooks.on('renderItemSheet5e', (...args) => onRenderItemSheet(...args));
 Hooks.on('dnd5e.renderChatMessage', renderUsedMasteries);
 Hooks.on('rsreforged.renderChatMessageContent', (message, html) => renderUsedMasteries(message, html[0] ?? html));
 Hooks.on('updateChatMessage', (message, changes) => {
-	if (!changes.flags?.wm5e?.usedMasteries) return;
+	if (!changes.flags?.wm5e?.usedMasteries && !changes.flags?.wm5e?.usedMasteryRows) return;
 	for (const card of document.querySelectorAll(`[data-message-id="${message.id}"]`)) {
 		const root = card.closest('.chat-message') ?? card;
 		renderUsedMasteries(game.messages.get(root.dataset.messageId) ?? message, root);
@@ -96,9 +101,13 @@ Hooks.on('dnd5e.preRollAttack', (...args) => doPreRollAttack(args));
 Hooks.on('dnd5e.preRollDamage', (...args) => doPreRollDamage(args));
 Hooks.on('dnd5e.postRollAttack', (...args) => doAutoMasteries(...args, 'attack'));
 Hooks.on('dnd5e.rollDamage', (...args) => doAutoMasteries(...args, 'damage'));
-Hooks.on('dnd5e.postRollConfiguration', (rolls, _config, _dialog, message) => {
-	if (message.create !== false || message.data?.flags?.rsreforged?.workflowVersion !== 2) return;
-	for (const roll of rolls) RSR_DEFERRED_ROLLS.add(roll);
+Hooks.on('dnd5e.postRollConfiguration', (rolls, config, _dialog, message) => {
+	const pendingContext = config.workflow && PENDING_AUTO_MASTERY_CONTEXT.get(config.workflow);
+	if (pendingContext) pendingContext.timestamp = Date.now();
+	for (const roll of rolls) {
+		MASTERY_ROLL_CONTEXT.set(roll, { workflow: config.workflow, create: message.create });
+		if (message.create === false && message.data?.flags?.rsreforged?.workflowVersion === 2) RSR_DEFERRED_ROLLS.add(roll);
+	}
 });
 Hooks.on('createChatMessage', (message, _options, userId) => {
 	if (userId !== game.user.id || message.flags?.rsreforged?.workflowVersion !== 2 || !['attack', 'damage'].includes(message.type)) return;
@@ -148,7 +157,7 @@ function doMidiPreDamageRoll(args) {
 	const [workflow, activity] = args;
 	const targetToken = getWorkflowTarget(workflow);
 	if (!activity?.uuid || !(targetToken?.actor instanceof Actor)) return;
-	const mastery = workflow?.attackRoll?.options?.mastery ?? PENDING_AUTO_MASTERY_CONTEXT.get(activity.uuid)?.mastery ?? '';
+	const mastery = workflow?.attackRoll?.options?.mastery ?? '';
 	const attackResult = getMidiAttackResult(workflow, targetToken);
 	if (!attackResult) return;
 	const context = {
@@ -166,7 +175,7 @@ function doMidiPreDamageRoll(args) {
 		isHit: attackResult.isHit,
 		mastery,
 	};
-	PENDING_AUTO_MASTERY_CONTEXT.set(activity.uuid, context);
+	PENDING_AUTO_MASTERY_CONTEXT.set(workflow, context);
 }
 
 async function doMidiAttackRollComplete(args) {
@@ -180,9 +189,10 @@ async function doMidiAttackRollComplete(args) {
 	const mastery = workflow?.attackRoll?.options?.mastery ?? '';
 	if (!mastery) return;
 	const attackResult = getMidiAttackResult(workflow, targetToken);
-	const attackMessage = workflow.chatCard ?? (workflow.itemCardId ? game.messages.get(workflow.itemCardId) : null) ?? (await findRelevantMessageForActivity(activity));
+	if (!attackResult) return;
+	const attackMessage = workflow.chatCard ?? (workflow.itemCardId ? game.messages.get(workflow.itemCardId) : null);
 	if (mastery === 'nick' && !isNickReminderEnabled()) return;
-	PENDING_AUTO_MASTERY_CONTEXT.set(activity.uuid, {
+	PENDING_AUTO_MASTERY_CONTEXT.set(workflow, {
 		mastery,
 		messageId: attackMessage?.id ?? null,
 		attackResult,
@@ -199,97 +209,108 @@ async function doMidiAttackRollComplete(args) {
 	};
 	const shouldTrigger = (attackResult.isMiss && mastery === 'graze') || mastery === 'nick' || (attackResult.isHit && ['push', 'sap', 'topple'].includes(mastery));
 	if (!shouldTrigger) return;
-	const used = await WM_ACTIONS[toMasteryLabel(mastery)]?.({ message: attackMessage, attackRoll: workflow.attackRoll, targetToken, shiftKey: false, attackResult });
-	if (used) await markMasteryUsed(attackMessage, mastery);
+	await executeMastery({ message: attackMessage, attackMessage, mastery, attackRoll: workflow.attackRoll, targetToken, rowId: getMidiAttackRowId(workflow), shiftKey: false, attackResult });
 }
 
-async function doAutoMasteries() {
-	if (!isAutoMasteriesEnabled()) return;
+async function doAutoMasteries(rolls, activityContext, action) {
+	if (!isAutoMasteriesEnabled() || rolls?.some((roll) => roll.options?.wm5eNoMastery)) return;
 	prunePendingAutoMasteryContext();
-	const [rolls, activityContext, action] = arguments;
+	const rollContext = MASTERY_ROLL_CONTEXT.get(rolls?.[0]);
 	if (!activityContext?.message && rolls?.some((roll) => RSR_DEFERRED_ROLLS.has(roll))) return;
-	if (rolls?.some((roll) => roll.options?.wm5eNoMastery)) return;
-	const activity = getHookSubject(activityContext);
-	const rollMessage = activityContext?.message ?? rolls?.[0]?.parent;
-	const originatingMessageId = rollMessage?.getOriginatingMessage?.()?.id;
-	const midiActive = game.modules.get('midi-qol')?.active ?? false;
-	const rsrActive = game.modules.get('rsreforged')?.active ?? false;
+	const midiActive = game.modules.get('midi-qol')?.active === true;
 	if (midiActive && action === 'attack') return;
-	const pendingContext = activity?.uuid ? PENDING_AUTO_MASTERY_CONTEXT.get(activity.uuid) : null;
-	logRsrMasteryDebug('start', { action, rolls, activity, midiActive, rsrActive, pendingContext });
-	let attackMessage;
-	let mastery;
-	let attackResult;
-
-	if (rsrActive || (midiActive && action === 'damage')) {
-		mastery = rolls?.[0]?.options?.mastery ?? pendingContext?.mastery ?? '';
-		attackResult = action === 'attack' ? summarizeAttackResult(rolls?.[0]) : pendingContext?.attackResult;
-		attackMessage = (rollMessage?.type === 'attack' ? rollMessage : getOriginatingAttackMessage(originatingMessageId)) ?? (pendingContext?.messageId ? game.messages.get(pendingContext.messageId) : null);
-		if (activity?.uuid && action === 'attack' && (mastery || attackResult)) {
-			PENDING_AUTO_MASTERY_CONTEXT.set(activity.uuid, {
-				mastery,
-				messageId: attackMessage?.id ?? pendingContext?.messageId ?? null,
-				attackResult,
-				targetActorUuid: pendingContext?.targetActorUuid ?? null,
-				targetTokenUuid: pendingContext?.targetTokenUuid ?? null,
-				timestamp: Date.now(),
-			});
-		}
-		if (!attackMessage) attackMessage = await findRelevantMessageForActivity(activity);
-		mastery = attackMessage?.system?.mastery ?? mastery;
-		if (activity?.uuid && (mastery || attackMessage?.id || attackResult)) {
-			PENDING_AUTO_MASTERY_CONTEXT.set(activity.uuid, {
-				mastery: mastery || pendingContext?.mastery || '',
-				messageId: attackMessage?.id ?? pendingContext?.messageId ?? null,
-				attackResult: attackResult ?? pendingContext?.attackResult ?? null,
-				attackRoll: pendingContext?.attackRoll,
-				targetActorUuid: pendingContext?.targetActorUuid ?? null,
-				targetTokenUuid: pendingContext?.targetTokenUuid ?? null,
-				timestamp: Date.now(),
-			});
-		}
+	// A non-created damage roll may be a reroll. Only Midi's explicit workflow can identify its attack.
+	if (!activityContext?.message && rollContext?.create === false && !rollContext.workflow) return;
+	const rollMessage = activityContext?.message ?? rolls?.[0]?.parent;
+	if (action === 'attack' && rolls.length > 1 && rollMessage?.type === 'attack') {
+		return Promise.all(rolls.map((roll, index) => doAutoMasteries([roll], { ...activityContext, message: rollMessage, rowId: getAttackRowId(rollMessage, index) }, action)));
+	}
+	const workflow = rollContext?.workflow ?? activityContext?.workflow;
+	const pendingContext = workflow ? PENDING_AUTO_MASTERY_CONTEXT.get(workflow) : null;
+	let attackMessage, attackRoll, rowId;
+	if (midiActive && pendingContext) {
+		attackMessage = game.messages.get(pendingContext.messageId);
+		attackRoll = pendingContext.attackRoll;
+		rowId = getMidiAttackRowId(workflow);
 	} else {
-		attackMessage = action === 'attack' && rollMessage?.type === 'attack' ? rollMessage : getOriginatingAttackMessage(originatingMessageId);
-		mastery = attackMessage?.system?.mastery ?? rolls?.[0]?.options?.mastery;
-		attackResult = summarizeAttackResult(attackMessage?.rolls?.[0]);
+		const reference = resolveAttackReference(rollMessage ?? game.messages.get(rolls?.[0]?.options?.originatingMessage), activityContext?.rowId);
+		if (!reference) return;
+		({ message: attackMessage, roll: attackRoll, rowId } = reference);
 	}
-
-	logRsrMasteryDebug('resolved', { action, mastery, attackMessage, attackResult, activity, midiActive, rsrActive, pendingContext });
-
-	if (!attackMessage && !attackResult) {
-		logRsrMasteryDebug('return-no-attack', { action, mastery, attackMessage, attackResult, activity, midiActive, rsrActive, pendingContext });
-		return;
-	}
-
-	if (!mastery) {
-		logRsrMasteryDebug('return-no-mastery', { action, mastery, attackMessage, attackResult, activity, midiActive, rsrActive, pendingContext });
-		return;
-	}
-	const { isHit, isMiss } = attackResult ?? summarizeAttackResult(attackMessage?.rolls?.[0]) ?? {};
-
-	const hitAttackMasteries = ['push', 'sap', 'topple'];
-	const damageMasteries = ['cleave', 'slow', 'vex'];
+	if (!attackMessage || !attackRoll) return;
+	const mastery = attackMessage.system?.mastery ?? attackRoll.options?.mastery ?? pendingContext?.mastery;
+	if (!mastery) return;
+	const attackResult = pendingContext?.attackResult ?? summarizeAttackResult(attackRoll);
+	logRsrMasteryDebug('resolved', { action, mastery, attackMessage, attackResult, activity: getHookSubject(activityContext), midiActive, pendingContext });
+	const { isHit, isMiss } = attackResult ?? {};
 	const shouldTrigger =
-		(action === 'attack' && ((isMiss && mastery === 'graze') || (!midiActive && mastery === 'nick' && isNickReminderEnabled()) || (isHit && !midiActive && hitAttackMasteries.includes(mastery)))) ||
-		(action === 'damage' && isHit && damageMasteries.includes(mastery));
-	logRsrMasteryDebug('decision', { action, mastery, attackMessage, isHit, isMiss, shouldTrigger });
-	if (shouldTrigger && attackMessage) {
-		const contextToken = action === 'damage' && midiActive ? getTokenFromUuid(pendingContext?.targetTokenUuid) : null;
-		const targets = action === 'damage' && rollMessage?.system?.targets?.length ? rollMessage.system.targets : undefined;
-		const used = await WM_ACTIONS[toMasteryLabel(mastery)]?.({ message: attackMessage, attackRoll: pendingContext?.attackRoll ?? attackMessage.rolls?.[0], targetToken: contextToken, targets, shiftKey: false, attackResult });
-		logRsrMasteryDebug('used', { mastery, used, attackMessage });
-		if (used) await markMasteryUsed(attackMessage, mastery);
+		(action === 'attack' && ((isMiss && mastery === 'graze') || (mastery === 'nick' && isNickReminderEnabled()) || (isHit && ['push', 'sap', 'topple'].includes(mastery)))) ||
+		(action === 'damage' && isHit && ['cleave', 'slow', 'vex'].includes(mastery));
+	if (!shouldTrigger) return;
+	const token = midiActive ? getTokenFromUuid(pendingContext?.targetTokenUuid) : null;
+	const targets = action === 'damage' && rollMessage?.system?.targets?.length ? rollMessage.system.targets : undefined;
+	await executeMastery({ message: attackMessage, attackMessage, mastery, attackRoll, targetToken: token, targets, rowId, shiftKey: false, attackResult });
+}
+
+function getUsageMessage(message) {
+	const seen = new Set();
+	while (message && !seen.has(message.id)) {
+		if (message.type === 'usage') return message;
+		seen.add(message.id);
+		message = message.getOriginatingMessage?.();
 	}
-	if ((midiActive || rsrActive) && activity?.uuid && (action === 'damage' || shouldTrigger)) {
-		PENDING_AUTO_MASTERY_CONTEXT.delete(activity.uuid);
+	return null;
+}
+
+function getAttackRowId(message, index = 0) {
+	return message.rolls?.[index]?.options?.bm5eAttackRowId ?? `${message.id}:${index}`;
+}
+
+function getMidiAttackRowId(workflow) {
+	// The workflow survives attack rerolls; another activity use has a different workflow/card.
+	const message = workflow.chatCard;
+	if (message?.type === 'attack' && message.rolls?.length === 1) return getAttackRowId(message);
+	return `midi:${message?.uuid ?? workflow.itemCardId ?? workflow.id}`;
+}
+
+function resolveAttackReference(message, rowId) {
+	if (!message) return null;
+	const association = message.type === 'damage' ? message.flags?.bm5e?.attackAssociation : undefined;
+	if (association !== undefined) {
+		if (association?.version !== 1 || !Array.isArray(association.attacks) || association.attacks.length !== 1) return null;
+		const reference = association.attacks[0];
+		const attack = game.messages.get(reference.messageId);
+		if (attack?.type !== 'attack' || !getUsageMessage(message) || getUsageMessage(attack)?.id !== getUsageMessage(message)?.id) return null;
+		return resolveAttackReference(attack, reference.rowId);
 	}
+	if (message.type !== 'attack') {
+		if (game.modules.get('midi-qol')?.active) {
+			const rolls = (message.rolls ?? []).filter((roll) => roll.options?.['midi-qol']?.rollType === 'attack');
+			if (rolls.length === 1) return { message, roll: rolls[0], rowId: `midi:${message.uuid ?? message.id}` };
+		}
+		const origin = message.getOriginatingMessage?.();
+		if (origin && origin !== message && origin.type === 'attack') return resolveAttackReference(origin, rowId);
+		const usage = getUsageMessage(message) ?? message;
+		const attacks = usage.getAssociatedRolls?.('attack') ?? dnd5e.registry.messages.get(usage.id, 'attack') ?? [];
+		if (message.type === 'usage' && rowId != null) {
+			const references = attacks.map((attack) => resolveAttackReference(attack, rowId)).filter(Boolean);
+			return references.length === 1 ? references[0] : null;
+		}
+		// Never guess the latest row in a combined card.
+		if (attacks.length !== 1 || attacks[0].rolls?.length !== 1) return null;
+		const attack = attacks[0];
+		if (message.type === 'damage' && ((attack.timestamp > message.timestamp) ||
+			(message.system?.activity?.uuid && message.system.activity.uuid !== attack.system?.activity?.uuid))) return null;
+		return resolveAttackReference(attack, rowId);
+	}
+	const index = rowId == null ? (message.rolls?.length === 1 ? 0 : -1) : message.rolls?.findIndex((_roll, i) => getAttackRowId(message, i) === rowId);
+	if (!(index >= 0)) return null;
+	return { message, roll: message.rolls[index], rowId: getAttackRowId(message, index) };
 }
 
 function getOriginatingAttackMessage(messageId) {
-	if (!messageId) return null;
 	const message = game.messages.get(messageId);
-	if (message?.type === 'attack') return message;
-	return dnd5e.registry.messages.get(messageId, 'attack')?.pop();
+	return message?.type === 'attack' ? message : resolveAttackReference(message)?.message ?? null;
 }
 
 function getHookSubject(context) {
@@ -371,34 +392,10 @@ function summarizeAttackResult(roll) {
 }
 
 function prunePendingAutoMasteryContext(now = Date.now()) {
-	for (const [activityUuid, context] of PENDING_AUTO_MASTERY_CONTEXT.entries()) {
+	for (const [workflow, context] of PENDING_AUTO_MASTERY_CONTEXT.entries()) {
 		if (now - (context?.timestamp ?? 0) <= PENDING_AUTO_MASTERY_MAX_AGE_MS) continue;
-		PENDING_AUTO_MASTERY_CONTEXT.delete(activityUuid);
+		PENDING_AUTO_MASTERY_CONTEXT.delete(workflow);
 	}
-}
-
-async function findRelevantMessageForActivity(activity, attempts = 6, delayMs = 25) {
-	if (!activity?.uuid) return null;
-	for (let attempt = 0; attempt < attempts; attempt += 1) {
-		const message = getRecentRelevantMessageForActivity(activity);
-		if (message) return message;
-		await new Promise((resolve) => setTimeout(resolve, delayMs));
-	}
-	return null;
-}
-
-function getRecentRelevantMessageForActivity(activity) {
-	if (!activity?.uuid) return null;
-	const messages = game.messages?.contents ?? [];
-	let activityMatch = null;
-	for (let i = messages.length - 1; i >= 0; i -= 1) {
-		const message = messages[i];
-		if ((message?.system?.activity?.uuid ?? message?.flags?.dnd5e?.activity?.uuid) !== activity.uuid) continue;
-		if (message.type === 'attack' || message?.flags?.dnd5e?.roll?.type === 'attack') return message;
-		if (message?.rolls?.[0]?.options?.rollType === 'attack') return message;
-		activityMatch ||= message;
-	}
-	return activityMatch;
 }
 
 async function onActionsClick(event) {
@@ -431,7 +428,7 @@ async function onActionsClick(event) {
 	const messageId = el?.closest?.('[data-message-id]')?.dataset?.messageId ?? event?.currentTarget?.dataset?.messageId;
 	const message = game.messages.get(messageId);
 
-	if (!message?.isOwner || (!tooltip && !term)) return;
+	if (!message || !canUseMastery(message, game.user) || (!tooltip && !term)) return;
 
 	if (event.type === 'contextmenu') {
 		event.preventDefault();
@@ -459,9 +456,24 @@ async function onActionsClick(event) {
 	event.preventDefault();
 	event.stopPropagation();
 
-	const used = await wmAction({ message: getOriginatingAttackMessage(messageId) ?? message, shiftKey, el });
-	if (used) await markMasteryUsed(message, (term ?? tooltip).toLowerCase(), el);
+	const reference = await selectManualAttackReference(message, el.closest('[data-bm5e-attack-row-id]')?.dataset.bm5eAttackRowId);
+	if (!reference) return;
+	await executeMastery({ message: reference.message, attackMessage: reference.message, mastery: (term ?? tooltip).toLowerCase(), attackRoll: reference.roll, rowId: reference.rowId, shiftKey, el });
 	return;
+}
+
+async function selectManualAttackReference(message, rowId) {
+	const reference = resolveAttackReference(message, rowId);
+	if (reference || message.type !== 'usage') return reference;
+	const attacks = message.getAssociatedRolls?.('attack') ?? dnd5e.registry.messages.get(message.id, 'attack') ?? [];
+	const references = attacks.flatMap((attack) => attack.rolls.map((_roll, index) => resolveAttackReference(attack, getAttackRowId(attack, index))));
+	if (!references.length) return null;
+	const selected = await foundry.applications.api.DialogV2.wait({
+		window: { title: 'Select attack for mastery' },
+		content: '<p>Choose the attack for this mastery.</p>',
+		buttons: references.map(({ roll }, index) => ({ action: String(index), label: `Attack ${index + 1}: ${roll.total ?? ''}` })),
+	});
+	return typeof selected === 'string' ? references[Number(selected)] ?? null : null;
 }
 
 function onRenderItemSheet(app, html) {
@@ -1068,6 +1080,7 @@ function registerQueries() {
 	CONFIG.queries[Constants.ROLL_SAVE] = rollSavingThrow;
 	CONFIG.queries[Constants.PUSH] = pushAction;
 	CONFIG.queries[Constants.MARK_MASTERY_USED] = persistMasteryUsed;
+	CONFIG.queries[Constants.CLAIM_MASTERY] = claimMastery;
 }
 
 function getTargetDescriptors(tokens) {
@@ -1339,6 +1352,106 @@ function getPlayerForActor(actor) {
 	return game.users.activeGM ?? undefined;
 }
 
+function masteryRowKey(rowId) {
+	return Array.from(rowId, (character) => character.codePointAt(0).toString(16)).join('-');
+}
+
+function hasUsedMastery(message, mastery, rowId) {
+	if (message.flags?.wm5e?.usedMasteryRows?.[masteryRowKey(rowId)]?.[mastery]) return true;
+	// Older releases saved a single boolean on each attack document.
+	return !message.flags?.wm5e?.usedMasteryRows && (message.rolls?.length ?? 0) <= 1 && message.flags?.wm5e?.usedMasteries?.[mastery] === true;
+}
+
+function canUseMastery(message, user) {
+	const actor = message.getAssociatedActor?.() ?? message.speakerActor;
+	return user?.isGM || message.canUserModify(user, 'update') || getUsageMessage(message)?.canUserModify(user, 'update') || actor?.testUserPermission(user, 'OWNER');
+}
+
+function getMasteryTurn(actor, mastery) {
+	if (!['cleave', 'nick'].includes(mastery) || !actor) return null;
+	const combat = game.combats?.contents.find((combat) => combat.started && combat.combatants.some((combatant) => combatant.actor?.uuid === actor.uuid)) ?? game.combat;
+	return combat?.started && Number.isInteger(combat.turn) ? `${combat.id}:${combat.round}:${combat.turn}` : null;
+}
+
+async function executeMastery({ attackMessage, mastery, rowId, el, ...context }) {
+	if (!attackMessage || !rowId || hasUsedMastery(attackMessage, mastery, rowId)) return false;
+	const authority = game.users.activeGM ?? (attackMessage.author?.active ? attackMessage.author : null);
+	if (!authority) return false;
+	const request = (data) => authority.id === game.user.id ? claimMastery(data) : authority.query(Constants.CLAIM_MASTERY, data);
+	const data = { messageId: attackMessage.id, mastery, rowId };
+	let token, used = false;
+	try {
+		token = await request(data);
+		if (!token) return false;
+		used = !!(await WM_ACTIONS[toMasteryLabel(mastery)]({ ...context, el }));
+		return used;
+	} catch (error) {
+		console.error(`${Constants.MODULE_NAME} | Unable to execute mastery:`, error);
+		return false;
+	} finally {
+		if (token) {
+			try {
+				const saved = await request({ ...data, token, used });
+				if (used && saved) markUsed(el);
+				else if (used) console.warn(`${Constants.MODULE_NAME} | Unable to save ${mastery} use on ChatMessage ${attackMessage.id}.`);
+			} catch (error) {
+				console.error(`${Constants.MODULE_NAME} | Unable to finish mastery claim:`, error);
+			}
+		}
+	}
+}
+
+async function claimMastery({ messageId, mastery, rowId, token, used } = {}, { user = game.user } = {}) {
+	if (!Object.hasOwn(WM_ACTIONS, toMasteryLabel(mastery)) || typeof rowId !== 'string' || rowId.length > 256) return false;
+	const message = game.messages.get(messageId);
+	if (!message?.canUserModify(game.user, 'update') || !canUseMastery(message, user)) return false;
+	const authority = game.users.activeGM ?? message.author;
+	if (authority?.id !== game.user.id) return false;
+	if (message.type === 'attack' && !resolveAttackReference(message, rowId)) return false;
+	if (message.type !== 'attack' && (!game.modules.get('midi-qol')?.active || rowId !== `midi:${message.uuid ?? message.id}`)) return false;
+	const key = `${messageId}:${masteryRowKey(rowId)}:${mastery}`;
+	const existing = MASTERY_CLAIMS.get(key);
+	if (token) {
+		if (!existing || existing.token !== token || existing.userId !== user.id || existing.complete) return false;
+		if (!used) {
+			MASTERY_CLAIMS.delete(key);
+			if (existing.turnKey) MASTERY_TURN_CLAIMS.delete(existing.turnKey);
+			return true;
+		}
+		// Retain the reservation if persistence fails after the action has already happened.
+		existing.complete = true;
+		if (existing.turn) {
+			const actorKey = existing.actor.uuid;
+			const previous = MASTERY_ACTOR_UPDATES.get(actorKey) ?? Promise.resolve();
+			const update = previous.catch(() => {}).then(() => {
+				const turns = existing.actor.getFlag(Constants.MODULE_ID, `masteryTurns.${mastery}`) ?? [];
+				return existing.actor.setFlag(Constants.MODULE_ID, `masteryTurns.${mastery}`, [...new Set([...turns, existing.turn])].slice(-8));
+			});
+			MASTERY_ACTOR_UPDATES.set(actorKey, update);
+			try {
+				await update;
+			} finally {
+				if (MASTERY_ACTOR_UPDATES.get(actorKey) === update) MASTERY_ACTOR_UPDATES.delete(actorKey);
+			}
+		}
+		const saved = await persistMasteryUsed({ messageId, mastery, rowId }, { user });
+		if (saved) {
+			MASTERY_CLAIMS.delete(key);
+			if (existing.turnKey) MASTERY_TURN_CLAIMS.delete(existing.turnKey);
+		}
+		return saved;
+	}
+	if (existing || hasUsedMastery(message, mastery, rowId)) return false;
+	const actor = message.getAssociatedActor?.() ?? message.speakerActor;
+	const turn = getMasteryTurn(actor, mastery);
+	const turnKey = turn ? `${actor.uuid}:${mastery}:${turn}` : null;
+	if (turnKey && (MASTERY_TURN_CLAIMS.has(turnKey) || actor.getFlag(Constants.MODULE_ID, `masteryTurns.${mastery}`)?.includes(turn))) return false;
+	token = foundry.utils.randomID();
+	MASTERY_CLAIMS.set(key, { token, userId: user.id, actor, turn, turnKey });
+	if (turnKey) MASTERY_TURN_CLAIMS.set(turnKey, token);
+	return token;
+}
+
 async function markMasteryUsed(message, mastery, el) {
 	message = getOriginatingAttackMessage(message?.id) ?? message;
 	if (!message || !Object.hasOwn(WM_ACTIONS, toMasteryLabel(mastery))) return false;
@@ -1357,33 +1470,25 @@ async function markMasteryUsed(message, mastery, el) {
 	return false;
 }
 
-async function persistMasteryUsed({ messageId, mastery } = {}, { user = game.user } = {}) {
+async function persistMasteryUsed({ messageId, mastery, rowId } = {}, { user = game.user } = {}) {
 	if (!Object.hasOwn(WM_ACTIONS, toMasteryLabel(mastery))) return false;
-	const message = getOriginatingAttackMessage(messageId) ?? game.messages.get(messageId);
+	const message = rowId?.startsWith('midi:') ? game.messages.get(messageId) : getOriginatingAttackMessage(messageId) ?? game.messages.get(messageId);
 	if (!message?.canUserModify(game.user, 'update')) return false;
-	const origin = message.getOriginatingMessage?.();
-	const actor = message.getAssociatedActor?.() ?? message.speakerActor;
-	if (!user?.isGM && !message.canUserModify(user, 'update') && !origin?.canUserModify(user, 'update') && !actor?.testUserPermission(user, 'OWNER')) return false;
+	if (!canUseMastery(message, user)) return false;
+	if (rowId) await message.setFlag(Constants.MODULE_ID, `usedMasteryRows.${masteryRowKey(rowId)}.${mastery}`, true);
 	if (!message.getFlag(Constants.MODULE_ID, `usedMasteries.${mastery}`)) await message.setFlag(Constants.MODULE_ID, `usedMasteries.${mastery}`, true);
 	return true;
 }
 
 function renderUsedMasteries(message, html) {
-	const cards = [[message, html], ...Array.from(html.querySelectorAll('[data-message-id]'), (card) => [game.messages.get(card.dataset.messageId), card])];
-	for (const [source, card] of cards) {
-		const usedMasteries = {
-			...source?.getOriginatingMessage?.()?.flags?.wm5e?.usedMasteries,
-			...(source?.id ? getOriginatingAttackMessage(source.id)?.flags?.wm5e?.usedMasteries : {}),
-			...source?.flags?.wm5e?.usedMasteries,
-		};
-		for (const [mastery, used] of Object.entries(usedMasteries)) {
-			if (!used) continue;
-			markUsed(findMasteryAnchor(card, mastery));
-			const uuid = getMasteryReference(mastery);
-			if (uuid) {
-				for (const el of card.querySelectorAll(`a[data-uuid="${uuid}"]:not(.wm5e-mastery-reference)`)) markUsed(el);
-			}
-		}
+	for (const el of html.querySelectorAll('a:not(.wm5e-mastery-reference)')) {
+		const source = game.messages.get(el.closest('[data-message-id]')?.dataset.messageId) ?? message;
+		const rowId = el.closest('[data-bm5e-attack-row-id]')?.dataset.bm5eAttackRowId;
+		const reference = resolveAttackReference(source, rowId);
+		if (!reference) continue;
+		const mastery = Object.keys(WM_ACTIONS).map((key) => key.toLowerCase()).find((key) =>
+			(el.dataset.uuid && el.dataset.uuid === getMasteryReference(key)) || el.dataset.tooltip === toMasteryLabel(key));
+		if (mastery && hasUsedMastery(reference.message, mastery, reference.rowId)) markUsed(el);
 	}
 }
 
