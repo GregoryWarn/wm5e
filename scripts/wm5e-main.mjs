@@ -48,31 +48,7 @@ Hooks.on('init', () => {
 		terrainAction: null,
 		costMultiplier: 0,
 	};
-	npcMasteries();
 });
-
-function npcMasteries() {
-	const WeaponData = game.dnd5e.dataModels.item.WeaponData;
-	const original = Object.getOwnPropertyDescriptor(WeaponData.prototype, 'masteryOptions');
-
-	Object.defineProperty(WeaponData.prototype, 'masteryOptions', {
-		configurable: true,
-		get() {
-			const options = original.get.call(this);
-			if (options) return options;
-
-			const actor = this.parent?.actor;
-			if (actor?.type !== 'npc' || !this.mastery || !isNpcMasteriesEnabled()) return null;
-
-			return [
-				{
-					value: this.mastery,
-					label: CONFIG.DND5E.weaponMasteries[this.mastery]?.label ?? this.mastery,
-				},
-			];
-		},
-	});
-}
 
 Hooks.on('ready', () => {
 	WM_REFERENCES = CONFIG.DND5E.weaponMasteries;
@@ -135,11 +111,20 @@ Hooks.on('rsreforged.renderRoll', (...args) => onRsrRenderRoll(...args));
 
 function doPreRollAttack(args) {
 	const [config, dialog] = args;
-	if (config.wm5e) {
+	if (config.wm5e || config.wm5eNoMastery) {
 		config.mastery = '';
 		config.wm5eNoMastery = true;
 		setNoMasteryRollOptions(config);
+		dialog.options ??= {};
 		dialog.options.masteryOptions = [];
+		return;
+	}
+	const item = config.subject?.item;
+	if (item?.type !== 'weapon' || item.actor?.type !== 'npc' || !item.system.mastery || item.system.masteryOptions || !isNpcMasteriesEnabled()) return;
+	config.mastery ??= item.system.mastery;
+	for (const roll of config.rolls ?? []) {
+		roll.options ??= {};
+		roll.options.mastery = config.mastery;
 	}
 }
 
