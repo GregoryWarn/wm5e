@@ -70,6 +70,9 @@ Hooks.on('ready', () => {
 	LISTENERS_REGISTERED = true;
 });
 Hooks.on('renderItemSheet5e', (...args) => onRenderItemSheet(...args));
+Hooks.on('userConnected', (user, connected) => {
+	if (!connected) releaseAbandonedMasteryClaims(user.id);
+});
 Hooks.on('dnd5e.renderChatMessage', renderUsedMasteries);
 Hooks.on('rsreforged.renderChatMessageContent', (message, html) => renderUsedMasteries(message, html[0] ?? html));
 Hooks.on('updateChatMessage', (message, changes) => {
@@ -1457,12 +1460,21 @@ async function executeMastery({ attackMessage, mastery, rowId, el, ...context })
 	}
 }
 
+function releaseAbandonedMasteryClaims(userId) {
+	for (const [key, claim] of MASTERY_CLAIMS) {
+		if (claim.complete || (userId ? claim.userId !== userId : game.users.get(claim.userId)?.active !== false)) continue;
+		MASTERY_CLAIMS.delete(key);
+		if (claim.turnKey && MASTERY_TURN_CLAIMS.get(claim.turnKey) === claim.token) MASTERY_TURN_CLAIMS.delete(claim.turnKey);
+	}
+}
+
 async function claimMastery({ messageId, mastery, rowId, token, used } = {}, { user = game.user } = {}) {
 	if (!Object.hasOwn(WM_ACTIONS, toMasteryLabel(mastery)) || typeof rowId !== 'string' || rowId.length > 256) return false;
 	const message = game.messages.get(messageId);
 	if (!message?.canUserModify(game.user, 'update') || !canUseMastery(message, user)) return false;
 	const authority = game.users.activeGM ?? message.author;
 	if (authority?.id !== game.user.id) return false;
+	releaseAbandonedMasteryClaims();
 	if (message.type === 'attack' && !resolveAttackReference(message, rowId)) return false;
 	if (message.type !== 'attack' && (!game.modules.get('midi-qol')?.active || rowId !== `midi:${message.uuid ?? message.id}`)) return false;
 	const key = `${messageId}:${masteryRowKey(rowId)}:${mastery}`;
