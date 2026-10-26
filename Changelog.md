@@ -1,12 +1,17 @@
 ## 14.606.2
-* Push now uses Foundry's native movement paths, respecting walls and D&D5E movement restrictions without spending movement. Blocked paths are excluded from the distance choices.
-* Automatic masteries no longer depend on visible mastery links or tags, improving compatibility with modules that hide or replace chat card content.
-* Improved attack message resolution with RSReforged using D&D5E's current message data. Manual mastery actions still require RSReforged to restore the system's mastery links; automatic masteries work without them.
-* Mastery usage is saved on the attack message, with used indicators restored on associated chat cards when links render.
-* Added an authorized GM fallback for saving mastery usage when a player cannot update the attack message. Failed saves no longer mark links as used locally.
-* Fixed automatic masteries running before RSReforged creates its batched roll messages, which could resolve an older attack instead.
+* Push now respects walls and movement restrictions without spending the target's movement. Blocked destinations are excluded from the distance choices.
+* Automatic masteries now work even when other modules hide mastery links or tags.
+* Fixed automatic masteries sometimes using an older attack with RSReforged. Manual mastery actions still require RSReforged to display the system's mastery links.
+* Mastery links remember their used state across chat refreshes, reloads, and other clients.
+* Prevented repeated mastery use from the same attack, including after rerolls. Separate attacks on the same chat card can still trigger their own masteries.
+* Fixed mastery actions staying unavailable after a player disconnects with a selection dialog open.
+* Improved mastery support for BM5e combined and compact chat cards, keeping each mastery linked to the correct attack.
+* Cleave now respects its once-per-turn limit across weapon changes and gives a clear notice when it has already been used. Nick reminders appear only once per turn.
+* Improved reliability when players use masteries from GM-created attack cards.
 * Graze now uses the ability selected for the attack roll and identifies its damage card as Graze.
-* MidiQOL mastery automation now uses its checked hit/miss outcome and preserves the actual attack roll when resolving actions from combined chat cards.
+* Masteries now follow MidiQOL's final hit or miss result and use the correct attack when several rolls share a chat card.
+* Fixed mastery actions failing on chat cards after the weapon was consumed or deleted.
+* Push, target selection, and Cleave attack and damage dialogs now open beside the chat card you used.
 
 ## 14.606.1
 * Verified compatibility with Foundry v14.368 and D&D5E v6.0.6.
