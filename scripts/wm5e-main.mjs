@@ -454,7 +454,7 @@ async function onActionsClick(event) {
 	if (!wmAction) return;
 
 	event.preventDefault();
-	event.stopPropagation();
+	event.stopImmediatePropagation();
 
 	const reference = await selectManualAttackReference(message, el.closest('[data-bm5e-attack-row-id]')?.dataset.bm5eAttackRowId);
 	if (!reference) return;
