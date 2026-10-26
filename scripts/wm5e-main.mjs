@@ -18,6 +18,7 @@ const PENDING_AUTO_MASTERY_MAX_AGE_MS = 60000;
 const RSR_MASTERY_LINKS = new Map();
 const RSR_DEFERRED_ROLLS = new WeakSet();
 const MASTERY_ROLL_CONTEXT = new WeakMap();
+const MASTERY_DIALOG_POSITIONS = new WeakMap();
 const MASTERY_CLAIMS = new Map();
 const MASTERY_TURN_CLAIMS = new Map();
 const MASTERY_ACTOR_UPDATES = new Map();
@@ -99,13 +100,26 @@ Hooks.on('renderSettingsConfig', (_app, html) => {
 });
 Hooks.on('dnd5e.preRollAttack', (...args) => doPreRollAttack(args));
 Hooks.on('dnd5e.preRollDamage', (...args) => doPreRollDamage(args));
+Hooks.on('dnd5e.preUseActivity', (_activity, config, dialog) => {
+	const source = game.messages.get(config.event?.target?.closest?.('[data-message-id]')?.dataset.messageId);
+	const position = getMasteryDialogPosition(config.event) ?? MASTERY_DIALOG_POSITIONS.get(source) ?? dialog.options?.position;
+	if (position) MASTERY_DIALOG_POSITIONS.set(config, position);
+});
+Hooks.on('dnd5e.postUseActivity', (_activity, config, results) => {
+	const position = MASTERY_DIALOG_POSITIONS.get(config);
+	if (position && results.message) MASTERY_DIALOG_POSITIONS.set(results.message, position);
+});
 Hooks.on('dnd5e.postRollAttack', (...args) => doAutoMasteries(...args, 'attack'));
 Hooks.on('dnd5e.rollDamage', (...args) => doAutoMasteries(...args, 'damage'));
 Hooks.on('dnd5e.postRollConfiguration', (rolls, config, _dialog, message) => {
 	const pendingContext = config.workflow && PENDING_AUTO_MASTERY_CONTEXT.get(config.workflow);
 	if (pendingContext) pendingContext.timestamp = Date.now();
+	const origin = game.messages.get(message.data?.system?.origin);
+	const dialogPosition = config.wm5eDialogPosition ?? MASTERY_DIALOG_POSITIONS.get(getUsageMessage(origin) ?? origin) ?? _dialog.options?.position;
+	if (dialogPosition && config.workflow) MASTERY_DIALOG_POSITIONS.set(config.workflow, dialogPosition);
+	if (dialogPosition && pendingContext) pendingContext.dialogPosition = dialogPosition;
 	for (const roll of rolls) {
-		MASTERY_ROLL_CONTEXT.set(roll, { workflow: config.workflow, create: message.create });
+		MASTERY_ROLL_CONTEXT.set(roll, { workflow: config.workflow, create: message.create, dialogPosition });
 		if (message.create === false && message.data?.flags?.rsreforged?.workflowVersion === 2) RSR_DEFERRED_ROLLS.add(roll);
 	}
 });
@@ -120,6 +134,7 @@ Hooks.on('rsreforged.renderRoll', (...args) => onRsrRenderRoll(...args));
 
 function doPreRollAttack(args) {
 	const [config, dialog] = args;
+	config.wm5eDialogPosition ??= getMasteryDialogPosition(config.event ?? config.workflow?.rollOptions?.event);
 	if (config.wm5e || config.wm5eNoMastery) {
 		config.mastery = '';
 		config.wm5eNoMastery = true;
@@ -139,6 +154,7 @@ function doPreRollAttack(args) {
 
 function doPreRollDamage(args) {
 	const [config] = args;
+	config.wm5eDialogPosition ??= getMasteryDialogPosition(config.event ?? config.workflow?.rollOptions?.event);
 	if (config.wm5eNoMastery) {
 		setNoMasteryRollOptions(config);
 		if (config.workflow && !Array.isArray(config.workflow.targetDescriptors)) config.workflow.targetDescriptors = [];
@@ -154,7 +170,7 @@ function setNoMasteryRollOptions(config) {
 
 function doMidiPreDamageRoll(args) {
 	if (!isAutoMasteriesEnabled()) return;
-	const [workflow, activity] = args;
+	const [workflow, activity, config] = args;
 	const targetToken = getWorkflowTarget(workflow);
 	if (!activity?.uuid || !(targetToken?.actor instanceof Actor)) return;
 	const mastery = workflow?.attackRoll?.options?.mastery ?? '';
@@ -165,6 +181,7 @@ function doMidiPreDamageRoll(args) {
 		messageId: workflow?.itemCardId ?? workflow?.defaultItemCardUuid?.split('.').pop() ?? null,
 		attackResult,
 		attackRoll: workflow.attackRoll,
+		dialogPosition: getMasteryDialogPosition(config?.event) ?? MASTERY_DIALOG_POSITIONS.get(workflow),
 		targetActorUuid: targetToken.actor.uuid,
 		targetTokenUuid: targetToken.document.uuid,
 		timestamp: Date.now(),
@@ -192,7 +209,9 @@ async function doMidiAttackRollComplete(args) {
 	if (!attackResult) return;
 	const attackMessage = workflow.chatCard ?? (workflow.itemCardId ? game.messages.get(workflow.itemCardId) : null);
 	if (mastery === 'nick' && !isNickReminderEnabled()) return;
+	const dialogPosition = MASTERY_ROLL_CONTEXT.get(workflow.attackRoll)?.dialogPosition ?? MASTERY_DIALOG_POSITIONS.get(workflow) ?? getMasteryDialogPosition(workflow.rollOptions?.event);
 	PENDING_AUTO_MASTERY_CONTEXT.set(workflow, {
+		dialogPosition,
 		mastery,
 		messageId: attackMessage?.id ?? null,
 		attackResult,
@@ -209,7 +228,7 @@ async function doMidiAttackRollComplete(args) {
 	};
 	const shouldTrigger = (attackResult.isMiss && mastery === 'graze') || mastery === 'nick' || (attackResult.isHit && ['push', 'sap', 'topple'].includes(mastery));
 	if (!shouldTrigger) return;
-	await executeMastery({ message: attackMessage, attackMessage, mastery, attackRoll: workflow.attackRoll, targetToken, rowId: getMidiAttackRowId(workflow), shiftKey: false, attackResult });
+	await executeMastery({ message: attackMessage, attackMessage, mastery, attackRoll: workflow.attackRoll, targetToken, dialogPosition, rowId: getMidiAttackRowId(workflow), shiftKey: false, attackResult });
 }
 
 async function doAutoMasteries(rolls, activityContext, action) {
@@ -249,7 +268,8 @@ async function doAutoMasteries(rolls, activityContext, action) {
 	if (!shouldTrigger) return;
 	const token = midiActive ? getTokenFromUuid(pendingContext?.targetTokenUuid) : null;
 	const targets = action === 'damage' && rollMessage?.system?.targets?.length ? rollMessage.system.targets : undefined;
-	await executeMastery({ message: attackMessage, attackMessage, mastery, attackRoll, targetToken: token, targets, rowId, shiftKey: false, attackResult });
+	const dialogPosition = activityContext?.dialogPosition ?? rollContext?.dialogPosition ?? pendingContext?.dialogPosition ?? MASTERY_DIALOG_POSITIONS.get(getUsageMessage(attackMessage) ?? attackMessage);
+	await executeMastery({ message: attackMessage, attackMessage, mastery, attackRoll, targetToken: token, targets, dialogPosition, rowId, shiftKey: false, attackResult });
 }
 
 function getUsageMessage(message) {
@@ -399,6 +419,15 @@ function prunePendingAutoMasteryContext(now = Date.now()) {
 }
 
 async function onActionsClick(event) {
+	if (event.type === 'click' && event.target.closest?.('button, [data-action]')) {
+		const source = game.messages.get(event.target.closest('[data-message-id]')?.dataset.messageId);
+		const position = source && getMasteryDialogPosition(event);
+		if (position) {
+			MASTERY_DIALOG_POSITIONS.set(source, position);
+			const usage = getUsageMessage(source);
+			if (usage) MASTERY_DIALOG_POSITIONS.set(usage, position);
+		}
+	}
 	let el = event.target;
 
 	el = el.closest('a');
@@ -456,13 +485,14 @@ async function onActionsClick(event) {
 	event.preventDefault();
 	event.stopImmediatePropagation();
 
-	const reference = await selectManualAttackReference(message, el.closest('[data-bm5e-attack-row-id]')?.dataset.bm5eAttackRowId);
+	const dialogPosition = getMasteryDialogPosition(event, el);
+	const reference = await selectManualAttackReference(message, el.closest('[data-bm5e-attack-row-id]')?.dataset.bm5eAttackRowId, dialogPosition);
 	if (!reference) return;
-	await executeMastery({ message: reference.message, attackMessage: reference.message, mastery: (term ?? tooltip).toLowerCase(), attackRoll: reference.roll, rowId: reference.rowId, shiftKey, el });
+	await executeMastery({ message: reference.message, attackMessage: reference.message, mastery: (term ?? tooltip).toLowerCase(), attackRoll: reference.roll, rowId: reference.rowId, shiftKey, el, dialogPosition });
 	return;
 }
 
-async function selectManualAttackReference(message, rowId) {
+async function selectManualAttackReference(message, rowId, position) {
 	const reference = resolveAttackReference(message, rowId);
 	if (reference || message.type !== 'usage') return reference;
 	const attacks = message.getAssociatedRolls?.('attack') ?? dnd5e.registry.messages.get(message.id, 'attack') ?? [];
@@ -470,6 +500,7 @@ async function selectManualAttackReference(message, rowId) {
 	if (!references.length) return null;
 	const selected = await foundry.applications.api.DialogV2.wait({
 		window: { title: 'Select attack for mastery' },
+		...(position ? { position } : {}),
 		content: '<p>Choose the attack for this mastery.</p>',
 		buttons: references.map(({ roll }, index) => ({ action: String(index), label: `Attack ${index + 1}: ${roll.total ?? ''}` })),
 	});
@@ -676,10 +707,25 @@ function scheduleTargetDialogDecoration(preparedTargets, attempts = 8) {
 	requestAnimationFrame(tryDecorate);
 }
 
-async function promptTargetSelection(targets, multiple, title = 'Select Target') {
+function getMasteryDialogPosition(event, element = event?.target) {
+	if (!element && !Number.isFinite(event?.clientY)) return undefined;
+	const bounds = element?.closest?.('.message')?.getBoundingClientRect();
+	const controlBounds = element?.getBoundingClientRect?.();
+	const width = 400;
+	const left = bounds ? (bounds.left >= width + 10 ? bounds.left - width - 10 : bounds.right + 10) : window.innerWidth - 710;
+	const y = event?.clientY || (controlBounds ? controlBounds.top + controlBounds.height / 2 : bounds?.top);
+	return {
+		width,
+		left: Math.max(0, Math.min(left, window.innerWidth - width)),
+		...(Number.isFinite(y) ? { top: Math.max(0, Math.min(y - 80, window.innerHeight - 80)) } : {}),
+	};
+}
+
+async function promptTargetSelection(targets, multiple, title = 'Select Target', position) {
 	const preparedTargets = await prepareTargetSelectionData(targets);
 	const selectPromise = foundry.applications.api.DialogV2.wait({
 		window: { title },
+		...(position ? { position } : {}),
 		content: `<p>Choose ${multiple} target(s):</p>`,
 		modal: false,
 		buttons: preparedTargets.map((t) => ({ label: t.name, action: t.id })),
@@ -697,10 +743,11 @@ async function promptTargetSelection(targets, multiple, title = 'Select Target')
 	return canvas.tokens.get(select);
 }
 
-async function promptPushDistance(distances) {
+async function promptPushDistance(distances, position) {
 	const gridUnits = canvas.grid?.units || '';
 	const distance = await foundry.applications.api.DialogV2.wait({
 		window: { title: 'Mastery: Push' },
+		...(position ? { position } : {}),
 		content: '<p class="wm5e-push-dialog-label">Choose Distance</p>',
 		modal: false,
 		classes: ['wm5e-push-dialog'],
@@ -776,7 +823,7 @@ async function updateTargetEffect(target, effect, updates) {
 	return doQueries('updateEffect', { effectUuid: effect.uuid, updates });
 }
 
-async function doCleave({ message, shiftKey, el, attackResult, ...attackContext }) {
+async function doCleave({ message, shiftKey, el, attackResult, dialogPosition, ...attackContext }) {
 	const context = getActionContext({ ...attackContext, message, shiftKey, requireSuccess: true, warning: 'Notifications.CleaveRequiresSuccess', attackResult });
 	if (!context) return false;
 	const { attacker, attackerToken, target, targetToken, activity, item, originatingMessage, isAuthor } = context;
@@ -794,7 +841,7 @@ async function doCleave({ message, shiftKey, el, attackResult, ...attackContext 
 	}
 
 	if (validTargets.length === 1) setTargets([validTargets[0].id]);
-	const cleaveTarget = await promptTargetSelection(validTargets, 1, 'Select target for Cleave.');
+	const cleaveTarget = await promptTargetSelection(validTargets, 1, 'Select target for Cleave.', dialogPosition);
 	if (!cleaveTarget) {
 		ui.notifications.info(i18n('Notifications.NoTargets'));
 		return false;
@@ -807,9 +854,9 @@ async function doCleave({ message, shiftKey, el, attackResult, ...attackContext 
 		workflow = new MidiQOL.Workflows.Workflow(attacker, activity, ChatMessage.implementation.getSpeaker({ token: attackerToken }), new Set([cleaveTarget]), {});
 		workflow.targetDescriptors = getTargetDescriptors([cleaveTarget]);
 		workflow.wm5e = true;
-		cleaveAttackRolls = await activity.rollAttack({ workflow, wm5e: true, wm5eNoMastery: true });
+		cleaveAttackRolls = await activity.rollAttack({ workflow, wm5e: true, wm5eNoMastery: true }, dialogPosition ? { options: { position: dialogPosition } } : {});
 		await cleaveAttackRolls?.[0]?.toMessage(createMessageConfig({ activity, target: cleaveTarget, type: 'attack' }));
-	} else cleaveAttackRolls = await activity.rollAttack({ wm5e: true, wm5eNoMastery: true });
+	} else cleaveAttackRolls = await activity.rollAttack({ wm5e: true, wm5eNoMastery: true }, dialogPosition ? { options: { position: dialogPosition } } : {});
 	if (!cleaveAttackRolls?.length) {
 		await setTargets([targetToken.id]);
 		return false;
@@ -824,10 +871,10 @@ async function doCleave({ message, shiftKey, el, attackResult, ...attackContext 
 			workflow.attackMode = 'offhand';
 			workflow.isCritical = cleaveAttackRolls[0].isCritical;
 			config.workflow = workflow;
-			const cleaveDamageRolls = await activity.rollDamage(config);
+			const cleaveDamageRolls = await activity.rollDamage(config, dialogPosition ? { options: { position: dialogPosition } } : {});
 			const messageConfig = createMessageConfig({ activity, target: cleaveTarget, type: 'damage', rolls: cleaveDamageRolls });
 			await ChatMessage.implementation.create(messageConfig);
-		} else await activity.rollDamage(config);
+		} else await activity.rollDamage(config, dialogPosition ? { options: { position: dialogPosition } } : {});
 	}
 	await setTargets([targetToken.id]);
 	return true;
@@ -870,7 +917,7 @@ async function doNick({ message, shiftKey, el, ...attackContext }) {
 	return !!(await ChatMessage.implementation.create({ content, speaker, flavor: 'Mastery Nick' }));
 }
 
-async function doPush({ message, shiftKey, el, attackResult, ...attackContext }) {
+async function doPush({ message, shiftKey, el, attackResult, dialogPosition, ...attackContext }) {
 	const context = getActionContext({ ...attackContext, message, shiftKey, requireSuccess: true, warning: 'Notifications.PushRequiresSuccess', attackResult });
 	if (!context) return false;
 	const { attacker, attackerToken, targetToken, target, activity } = context;
@@ -891,7 +938,7 @@ async function doPush({ message, shiftKey, el, attackResult, ...attackContext })
 		ui.notifications.warn(i18n('Notifications.PushNoSpace'));
 		return false;
 	}
-	const pushDistance = await promptPushDistance([...positions.keys()]);
+	const pushDistance = await promptPushDistance([...positions.keys()], dialogPosition);
 	if (!pushDistance) return false;
 	const data = { tokenUuid: targetToken.document.uuid, waypoints: positions.get(pushDistance) };
 	const pushed = target.isOwner ? await pushAction(data) : await doQueries('push', data);
