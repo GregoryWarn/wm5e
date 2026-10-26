@@ -199,8 +199,7 @@ async function doMidiAttackRollComplete(args) {
 	};
 	const shouldTrigger = (attackResult.isMiss && mastery === 'graze') || mastery === 'nick' || (attackResult.isHit && ['push', 'sap', 'topple'].includes(mastery));
 	if (!shouldTrigger) return;
-	const contextMessage = getMessageWithTarget(attackMessage, targetToken, workflow.attackRoll);
-	const used = await WM_ACTIONS[toMasteryLabel(mastery)]?.({ message: contextMessage, shiftKey: false, attackResult });
+	const used = await WM_ACTIONS[toMasteryLabel(mastery)]?.({ message: attackMessage, attackRoll: workflow.attackRoll, targetToken, shiftKey: false, attackResult });
 	if (used) await markMasteryUsed(attackMessage, mastery);
 }
 
@@ -276,11 +275,8 @@ async function doAutoMasteries() {
 	logRsrMasteryDebug('decision', { action, mastery, attackMessage, isHit, isMiss, shouldTrigger });
 	if (shouldTrigger && attackMessage) {
 		const contextToken = action === 'damage' && midiActive ? getTokenFromUuid(pendingContext?.targetTokenUuid) : null;
-		const contextMessage =
-			contextToken ? getMessageWithTarget(attackMessage, contextToken, pendingContext?.attackRoll)
-			: action === 'damage' && rollMessage?.system?.targets?.length ? rollMessage
-			: attackMessage;
-		const used = await WM_ACTIONS[toMasteryLabel(mastery)]?.({ message: contextMessage, shiftKey: false, attackResult });
+		const targets = action === 'damage' && rollMessage?.system?.targets?.length ? rollMessage.system.targets : undefined;
+		const used = await WM_ACTIONS[toMasteryLabel(mastery)]?.({ message: attackMessage, attackRoll: pendingContext?.attackRoll ?? attackMessage.rolls?.[0], targetToken: contextToken, targets, shiftKey: false, attackResult });
 		logRsrMasteryDebug('used', { mastery, used, attackMessage });
 		if (used) await markMasteryUsed(attackMessage, mastery);
 	}
@@ -712,13 +708,12 @@ function createMessageConfig({ activity, target, type = 'damage', rolls, flavor 
 	return messageConfig;
 }
 
-function getMessageData(message) {
+function getMessageData(message, { targets = message?.system?.targets, targetToken: selectedTarget } = {}) {
 	if (!message) return;
-	const { targets } = message.system ?? {};
 	const { speaker, rolls: attackRolls, isAuthor, speakerActor: attacker, author } = message;
 
-	const attackerToken = message.getAssociatedToken?.()?.object ?? canvas.tokens.get(speaker.token);
-	const { actor: target, token: targetToken } = dnd5e.dataModels.chatMessage.fields.TargetsField.resolve(targets?.[0]);
+	const attackerToken = message.getAssociatedToken?.()?.object ?? canvas.tokens.get(speaker?.token);
+	const { actor: target, token: targetToken } = selectedTarget ? { actor: selectedTarget.actor, token: selectedTarget } : dnd5e.dataModels.chatMessage.fields.TargetsField.resolve(targets?.[0]);
 	if (!(target instanceof Actor)) return;
 	if (!(targetToken?.actor instanceof Actor)) return;
 	const activity = message.getAssociatedActivity?.();
@@ -747,21 +742,11 @@ function getTokenFromUuid(uuid) {
 	return null;
 }
 
-function getMessageWithTarget(message, token, attackRoll) {
-	const [descriptor] = getTargetDescriptors([token]);
-	if (!message || !descriptor) return message;
-	const clone = Object.create(message);
-	Object.defineProperty(clone, 'system', { value: foundry.utils.mergeObject(foundry.utils.duplicate(message.system ?? {}), { targets: [descriptor] }, { inplace: false }) });
-	if (attackRoll) Object.defineProperty(clone, 'rolls', { value: [attackRoll] });
-	return clone;
-}
-
-function getActionContext({ message, shiftKey, requireFailure, requireSuccess, warning, attackResult }) {
-	const data = getMessageData(message);
+function getActionContext({ message, shiftKey, requireFailure, requireSuccess, warning, attackResult, attackRoll, targetToken, targets }) {
+	const data = getMessageData(message, { targetToken, targets });
 	if (!data) return null;
 
-	const { attackRolls } = data;
-	const attackRoll = attackRolls?.[0];
+	attackRoll ??= data.attackRolls?.[0];
 	if (!attackRoll && !attackResult) return null;
 
 	const { isHit, isMiss } = attackResult ?? summarizeAttackResult(attackRoll);
@@ -779,8 +764,8 @@ async function updateTargetEffect(target, effect, updates) {
 	return doQueries('updateEffect', { effectUuid: effect.uuid, updates });
 }
 
-async function doCleave({ message, shiftKey, el, attackResult }) {
-	const context = getActionContext({ message, shiftKey, requireSuccess: true, warning: 'Notifications.CleaveRequiresSuccess', attackResult });
+async function doCleave({ message, shiftKey, el, attackResult, ...attackContext }) {
+	const context = getActionContext({ ...attackContext, message, shiftKey, requireSuccess: true, warning: 'Notifications.CleaveRequiresSuccess', attackResult });
 	if (!context) return false;
 	const { attacker, attackerToken, target, targetToken, activity, item, originatingMessage, isAuthor } = context;
 	if (!attackerToken || !targetToken || !activity) return false;
@@ -832,8 +817,8 @@ async function doCleave({ message, shiftKey, el, attackResult }) {
 	return true;
 }
 
-async function doGraze({ message, shiftKey, el, attackResult }) {
-	const context = getActionContext({ message, shiftKey, requireFailure: true, warning: 'Notifications.GrazeRequiresFailure', attackResult });
+async function doGraze({ message, shiftKey, el, attackResult, ...attackContext }) {
+	const context = getActionContext({ ...attackContext, message, shiftKey, requireFailure: true, warning: 'Notifications.GrazeRequiresFailure', attackResult });
 	if (!context) return false;
 	const { attacker, attackerToken, targetToken, activity, attackRoll } = context;
 	if (!attackerToken || !targetToken || !activity) return false;
@@ -861,8 +846,8 @@ async function doGraze({ message, shiftKey, el, attackResult }) {
 	return true;
 }
 
-async function doNick({ message, shiftKey, el }) {
-	const { attackerToken } = getMessageData(message) || {};
+async function doNick({ message, shiftKey, el, ...attackContext }) {
+	const { attackerToken } = getMessageData(message, attackContext) || {};
 	if (!attackerToken) return false;
 	const { text: { content } = {} } = await fromUuid(getMasteryReference('nick'));
 	const speaker = ChatMessage.implementation.getSpeaker({ token: attackerToken });
@@ -870,8 +855,8 @@ async function doNick({ message, shiftKey, el }) {
 	return true;
 }
 
-async function doPush({ message, shiftKey, el, attackResult }) {
-	const context = getActionContext({ message, shiftKey, requireSuccess: true, warning: 'Notifications.PushRequiresSuccess', attackResult });
+async function doPush({ message, shiftKey, el, attackResult, ...attackContext }) {
+	const context = getActionContext({ ...attackContext, message, shiftKey, requireSuccess: true, warning: 'Notifications.PushRequiresSuccess', attackResult });
 	if (!context) return false;
 	const { attacker, attackerToken, targetToken, target, activity } = context;
 	if (!attackerToken || !targetToken || !activity) return false;
@@ -913,8 +898,8 @@ function getPushPosition(targetToken, direction, maxDistance) {
 	return null;
 }
 
-async function doSap({ message, shiftKey, el, attackResult }) {
-	const context = getActionContext({ message, shiftKey, requireSuccess: true, warning: 'Notifications.SapRequiresSuccess', attackResult });
+async function doSap({ message, shiftKey, el, attackResult, ...attackContext }) {
+	const context = getActionContext({ ...attackContext, message, shiftKey, requireSuccess: true, warning: 'Notifications.SapRequiresSuccess', attackResult });
 	if (!context) return false;
 	const { attacker, attackerToken, target, targetToken, activity, item } = context;
 	if (!attackerToken || !targetToken || !activity) return false;
@@ -942,8 +927,8 @@ async function doSap({ message, shiftKey, el, attackResult }) {
 	return true;
 }
 
-async function doSlow({ message, shiftKey, el, attackResult }) {
-	const context = getActionContext({ message, shiftKey, requireSuccess: true, warning: 'Notifications.SlowRequiresSuccess', attackResult });
+async function doSlow({ message, shiftKey, el, attackResult, ...attackContext }) {
+	const context = getActionContext({ ...attackContext, message, shiftKey, requireSuccess: true, warning: 'Notifications.SlowRequiresSuccess', attackResult });
 	if (!context) return false;
 	const { attacker, attackerToken, target, targetToken, activity, item } = context;
 	if (!attackerToken || !targetToken || !activity) return false;
@@ -972,8 +957,8 @@ async function doSlow({ message, shiftKey, el, attackResult }) {
 	return true;
 }
 
-async function doTopple({ message, shiftKey, el, attackResult }) {
-	const context = getActionContext({ message, shiftKey, requireSuccess: true, warning: 'Notifications.ToppleRequiresSuccess', attackResult });
+async function doTopple({ message, shiftKey, el, attackResult, ...attackContext }) {
+	const context = getActionContext({ ...attackContext, message, shiftKey, requireSuccess: true, warning: 'Notifications.ToppleRequiresSuccess', attackResult });
 	if (!context) return false;
 	const { attacker, attackerToken, target, targetToken, activity, item } = context;
 	if (!attackerToken || !targetToken || !activity) return false;
@@ -1003,8 +988,8 @@ function isMatchingVexEffect(effect, attacker, attackerToken) {
 	return originItem?.actor?.uuid === attacker.uuid;
 }
 
-async function doVex({ message, shiftKey, el, attackResult }) {
-	const context = getActionContext({ message, shiftKey, requireSuccess: true, warning: 'Notifications.VexRequiresSuccess', attackResult });
+async function doVex({ message, shiftKey, el, attackResult, ...attackContext }) {
+	const context = getActionContext({ ...attackContext, message, shiftKey, requireSuccess: true, warning: 'Notifications.VexRequiresSuccess', attackResult });
 	if (!context) return false;
 	const { attacker, attackerToken, target, targetToken, activity, item } = context;
 	if (!attackerToken || !targetToken || !activity) return false;
