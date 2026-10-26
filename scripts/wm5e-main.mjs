@@ -798,7 +798,11 @@ async function doCleave({ message, shiftKey, el, attackResult, ...attackContext 
 		cleaveAttackRolls = await activity.rollAttack({ workflow, wm5e: true, wm5eNoMastery: true });
 		await cleaveAttackRolls?.[0]?.toMessage(createMessageConfig({ activity, target: cleaveTarget, type: 'attack' }));
 	} else cleaveAttackRolls = await activity.rollAttack({ wm5e: true, wm5eNoMastery: true });
-	if (cleaveAttackRolls?.[0]?.isSuccess) {
+	if (!cleaveAttackRolls?.length) {
+		await setTargets([targetToken.id]);
+		return false;
+	}
+	if (cleaveAttackRolls[0].isSuccess) {
 		const config = {
 			attackMode: 'offhand',
 			isCritical: cleaveAttackRolls[0].isCritical,
@@ -842,8 +846,7 @@ async function doGraze({ message, shiftKey, el, attackResult, ...attackContext }
 	options.flavor = label;
 	const messageConfig = createMessageConfig({ activity, target: targetToken, flavor: `${activity.item.name} - ${label}`, type: 'damage' });
 	messageConfig.system.activity = { ...messageConfig.system.activity, name: label };
-	await new CONFIG.Dice.DamageRoll(String(mod), attacker.getRollData(), options).toMessage(messageConfig);
-	return true;
+	return !!(await new CONFIG.Dice.DamageRoll(String(mod), attacker.getRollData(), options).toMessage(messageConfig));
 }
 
 async function doNick({ message, shiftKey, el, ...attackContext }) {
@@ -851,8 +854,8 @@ async function doNick({ message, shiftKey, el, ...attackContext }) {
 	if (!attackerToken) return false;
 	const { text: { content } = {} } = await fromUuid(getMasteryReference('nick'));
 	const speaker = ChatMessage.implementation.getSpeaker({ token: attackerToken });
-	await ChatMessage.implementation.create({ content, speaker, flavor: 'Mastery Nick' });
-	return true;
+	// This only posts the reminder; it does not grant or spend the Light property's extra attack.
+	return !!(await ChatMessage.implementation.create({ content, speaker, flavor: 'Mastery Nick' }));
 }
 
 async function doPush({ message, shiftKey, el, attackResult, ...attackContext }) {
@@ -922,9 +925,8 @@ async function doSap({ message, shiftKey, el, attackResult, ...attackContext }) 
 			wm5e: { source: 'Sap action' },
 		},
 	};
-	if (target.isOwner) await target.createEmbeddedDocuments('ActiveEffect', [effectData]);
-	else await doQueries('createEffects', { actorUuid: target.uuid, effects: [effectData] });
-	return true;
+	const effects = target.isOwner ? await target.createEmbeddedDocuments('ActiveEffect', [effectData]) : await doQueries('createEffects', { actorUuid: target.uuid, effects: [effectData] });
+	return !!effects?.length;
 }
 
 async function doSlow({ message, shiftKey, el, attackResult, ...attackContext }) {
@@ -935,10 +937,7 @@ async function doSlow({ message, shiftKey, el, attackResult, ...attackContext })
 	const start = ActiveEffect.implementation.getEffectStart();
 	const duration = { expiry: 'sourceStart', value: null, units: 'seconds' };
 	const existingEffect = target.appliedEffects.find((ae) => ae.name === effectName('SlowWeaponMastery'));
-	if (existingEffect) {
-		await updateTargetEffect(target, existingEffect, { 'system.origin.item': item.uuid, duration, start });
-		return true;
-	}
+	if (existingEffect) return updateTargetEffect(target, existingEffect, { 'system.origin.item': item.uuid, duration, start });
 	const changes = [{ key: 'system.attributes.movement.bonus', type: 'add', value: -2 * gridUnitDistance() }];
 	const effectData = {
 		name: effectName('SlowWeaponMastery'),
@@ -952,9 +951,8 @@ async function doSlow({ message, shiftKey, el, attackResult, ...attackContext })
 			wm5e: { source: 'Slow action' },
 		},
 	};
-	if (target.isOwner) await target.createEmbeddedDocuments('ActiveEffect', [effectData]);
-	else await doQueries('createEffects', { actorUuid: target.uuid, effects: [effectData] });
-	return true;
+	const effects = target.isOwner ? await target.createEmbeddedDocuments('ActiveEffect', [effectData]) : await doQueries('createEffects', { actorUuid: target.uuid, effects: [effectData] });
+	return !!effects?.length;
 }
 
 async function doTopple({ message, shiftKey, el, attackResult, ...attackContext }) {
@@ -969,16 +967,16 @@ async function doTopple({ message, shiftKey, el, attackResult, ...attackContext 
 	const ability = 'con';
 	const dc = attacker.system.abilities[activity.ability ?? 'str'].dc;
 	const saveRolls = await doQueries('rollSave', { actorUuid: target.uuid, ability, dc, flavor: `${item.name} - Topple Save` });
-	if (saveRolls?.[0]?.total >= dc) return true;
+	if (!saveRolls?.length) return false;
+	if (saveRolls[0].total >= dc) return true;
 	const effectData = foundry.utils.duplicate(await ActiveEffect.implementation.fromStatusEffect('prone'));
 	effectData.system ??= {};
 	effectData.system.origin ??= {};
 	effectData.system.origin.item = item.uuid;
 	effectData.flags = effectData.flags || {};
 	effectData.flags.wm5e = { source: 'Topple action' };
-	if (target.isOwner) await target.createEmbeddedDocuments('ActiveEffect', [effectData], { keepId: true });
-	else await doQueries('createEffects', { actorUuid: target.uuid, effects: [effectData], options: { keepId: true } });
-	return true;
+	const effects = target.isOwner ? await target.createEmbeddedDocuments('ActiveEffect', [effectData], { keepId: true }) : await doQueries('createEffects', { actorUuid: target.uuid, effects: [effectData], options: { keepId: true } });
+	return !!effects?.length;
 }
 
 function isMatchingVexEffect(effect, attacker, attackerToken) {
@@ -1013,9 +1011,8 @@ async function doVex({ message, shiftKey, el, attackResult, ...attackContext }) 
 			wm5e: vexFlags,
 		},
 	};
-	if (target.isOwner) await target.createEmbeddedDocuments('ActiveEffect', [effectData]);
-	else await doQueries('createEffects', { actorUuid: target.uuid, effects: [effectData] });
-	return true;
+	const effects = target.isOwner ? await target.createEmbeddedDocuments('ActiveEffect', [effectData]) : await doQueries('createEffects', { actorUuid: target.uuid, effects: [effectData] });
+	return !!effects?.length;
 }
 
 async function doQueries(type, data) {
